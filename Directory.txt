@@ -1,0 +1,35 @@
+CVA6-lab/                       # Main repository root
+  ├── benchmarks/               # Software only (formerly firmware)
+  │   ├── src/                  # Source files (main.c, main_mul.S, boot.S, etc.)
+  │   ├── linker/               # Linker scripts (link.ld)
+  │   └── spike-checking/       # Spike simulation logs
+  ├── rtl/                      # Processor RTL only (no testbenches)
+  ├── docs/
+  │   ├── 1-environment-setup.md  # Unified setup: Clone, Bender, GCC, and Spike installation
+  │   ├── 2-vivado-synthesis.md   # Vivado synthesis flow and resource reports
+  │   ├── 3-simulation-flow.md    # Official and manual simulation with Verilator
+  │   ├── 4-arch-32b-analysis.md  # 32-bit analysis: Single vs. Dual Issue & benchmark results
+  │   └── 5-arch-64b-custom.md    # 64-bit dev history, FLU Write-back architecture, and results
+  ├── tb/                       # All verification sources
+  │   ├── sv/                   # SystemVerilog testbenches (e.g., cva6_tb.sv for Vivado)
+  │   ├── cpp/                  # Verilator testbenches (tb_cva6_ww.cpp, tb_cva6.cpp, etc.)
+  │   └── wrappers/             # Simulation wrappers (cva6_axi_wrapper.sv)
+  ├── sim/                      # Simulation execution environment (Workspace)
+  │   ├── Makefile              # Makefile for Verilator simulation
+  │   └── filelists/            # Bender output .f files
+  ├── scripts/                  # Helper scripts (e.g., f-maker.py)
+  ├── fpga/
+  │   ├── vivado                # Vivado Tcl scripts
+  │   │   ├── cv32a6_imac_sv32.tcl
+  │   │   ├── cv32a6_imac_sv32_syn.tcl
+  │   │   ├── cv64a6_imafdc_sv39.tcl
+  │   │   └── cv64a6_imafdc_sv39_syn.tcl
+  │   ├── constraints
+  │   │   └── cva6_ooc.xdc
+  │   └── build/                # (gitignored) All Vivado outputs generated here
+  │       ├── vivado_prj_cv32a6/
+  │       └── vivado_prj_cv64a6/
+  ├── README.md                 # Main README
+  ├── Makefile                  # Main Makefile
+  └── .git
+

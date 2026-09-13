@@ -1,0 +1,102 @@
+[*]
+[*] GTKWave Analyzer v3.3.126 (w)1999-2026 BSI
+[*] Tue Sep  1 01:33:51 2026
+[*]
+[dumpfile] "/run/media/amin-maky/LinuxFiles/Prj/CVA6-Github/CVA6-Develop/verif-files/cv64a6_sim/waveform.vcd"
+[dumpfile_mtime] "Tue Sep  1 01:29:12 2026"
+[dumpfile_size] 55432799
+[savefile] "/run/media/amin-maky/LinuxFiles/Prj/CVA6-Github/CVA6-Develop/verif-files/cv64a6_sim/Test.gtkw"
+[timestart] 621
+[size] 1920 952
+[pos] -1 -1
+*-2.000000 634 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] TOP.
+[treeopen] TOP.cva6_axi_wrapper.
+[treeopen] TOP.cva6_axi_wrapper.i_cva6.
+[sst_width] 278
+[signals_width] 305
+[sst_expanded] 1
+[sst_vpaned_height] 594
+@28
+[color] 2
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.decoded_instr_ack_o[0]
+@29
+[color] 2
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.issue_pointer_q[2:0]
+@28
+[color] 1
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.trans_id_i[0][2:0]
+[color] 1
+(4)TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wt_valid_i[4:0]
+@420
+[color] 1
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wbdata_i[0][63:0]
+@28
+[color] 3
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.trans_id_i[1][2:0]
+[color] 3
+(3)TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wt_valid_i[4:0]
+@24
+[color] 3
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wbdata_i[1][63:0]
+@28
+[color] 5
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.trans_id_i[2][2:0]
+[color] 5
+(2)TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wt_valid_i[4:0]
+@24
+[color] 5
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wbdata_i[2][63:0]
+@28
+[color] 6
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.trans_id_i[3][2:0]
+[color] 6
+(1)TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wt_valid_i[4:0]
+@24
+[color] 6
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wbdata_i[3][63:0]
+@28
+[color] 2
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.trans_id_i[4][2:0]
+[color] 2
+(0)TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wt_valid_i[4:0]
+@24
+[color] 2
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wbdata_i[4][63:0]
+@28
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.clk_i
+[color] 1
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.commit_pointer_q[0][2:0]
+@420
+[color] 1
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.commit_instr_o[0].result[63:0]
+@28
+[color] 1
+(1)TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.commit_ack_i[1:0]
+[color] 7
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.commit_pointer_q[1][2:0]
+@420
+[color] 7
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.commit_instr_o[1].result[63:0]
+@28
+[color] 7
+(0)TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.commit_ack_i[1:0]
+@420
+[color] 5
+TOP.cva6_axi_wrapper.i_cva6.ex_stage_i.mult_buf_result_q[63:0]
+@28
+[color] 5
+TOP.cva6_axi_wrapper.i_cva6.ex_stage_i.mult_buf_trans_id_q[2:0]
+@800028
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.commit_ack_i[1:0]
+@1001200
+-group_end
+@800022
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.wt_valid_i[4:0]
+@1001200
+-group_end
+@28
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.stall_i
+TOP.cva6_axi_wrapper.i_cva6.issue_stage_i.i_scoreboard.bmiss
+[pattern_trace] 1
+[pattern_trace] 0
