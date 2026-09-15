@@ -4,7 +4,7 @@ set ROOT [file normalize [file join [file dirname [info script]] "../../rtl"]]
 
 set SIMROOT [file normalize [file join [file dirname [info script]] "../../tb"]]
 
-create_project cv64a6_imafdc_sv39 $ROOT/../fpga/build/vivado_prj_cv64a6 -part xc7vx485tffg1157-1 -force
+create_project cv32a6_imac_sv32 $ROOT/../fpga/build/vivado_prj_cv32a6 -part xc7vx485tffg1157-1 -force
 
 add_files -norecurse -fileset [current_fileset] [list \
     $ROOT/.bender/git/checkouts/tech_cells_generic-cc24c124b7267269/src/fpga/pad_functional_xilinx.sv \
@@ -223,7 +223,7 @@ add_files -norecurse -fileset [current_fileset] [list \
 ]
 
 add_files -norecurse -fileset [current_fileset] [list \
-    $ROOT/core/include/cv64a6_imafdc_sv39_config_pkg.sv \
+    $ROOT/core/include/cv32a6_imac_sv32_config_pkg.sv \
 ]
 
 add_files -norecurse -fileset [current_fileset] [list \
@@ -419,7 +419,7 @@ set_property include_dirs [list \
 ] [current_fileset -simset]
 
 set_property verilog_define [list \
-    TARGET_CV64A6_IMAFDC_SV39 \
+    TARGET_CV32A6_IMAC_SV32 \
     TARGET_FPGA \
     TARGET_SYNTHESIS \
     TARGET_VIVADO \
@@ -427,7 +427,7 @@ set_property verilog_define [list \
 ] [current_fileset]
 
 set_property verilog_define [list \
-    TARGET_CV64A6_IMAFDC_SV39 \
+    TARGET_CV32A6_IMAC_SV32 \
     TARGET_FPGA \
     TARGET_SYNTHESIS \
     TARGET_VIVADO \
@@ -456,7 +456,7 @@ set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} -value {-mode out_of_c
 
 # 4. Launch the synthesis process automatically using multiple CPU threads (jobs)
 # You can change "-jobs 8" based on your CPU cores to make it faster
-launch_runs synth_1 -jobs 8
+launch_runs synth_1 -jobs 15
 
 # 5. Wait for the synthesis run to complete before executing the next commands
 # This is crucial for automation so the script doesn't exit prematurely
@@ -467,8 +467,27 @@ open_run synth_1 -name synth_1
 
 # 7. Generate a resource utilization report and save it as a text file
 # The report will be saved inside the build directory for easy access
-report_utilization -file $ROOT/../fpga/build/vivado_prj_cv64a6/utilization_report.txt
+report_utilization -file $ROOT/../fpga/build/vivado_prj_cv32a6/utilization_report.txt
 
 # (Optional) Generate a timing summary report to check Fmax
-report_timing_summary -file $ROOT/../fpga/build/vivado_prj_cv64a6/timing_summary_report.txt
+report_timing_summary -file $ROOT/../fpga/build/vivado_prj_cv32a6/timing_summary_report.txt
 
+# ==============================================================================
+# POST-SYNTHESIS FUNCTIONAL SIMULATION
+# ==============================================================================
+
+# 8. Launch Post-Synthesis Functional Simulation
+launch_simulation -mode post-synthesis -type functional
+
+# 9. Log all waveforms to allow post-simulation inspection (.wdb)
+log_wave -r /
+
+# 10. Run the simulation
+# Make sure cva6_tb.sv has a $finish statement, or replace "run all" with e.g. "run 10us"
+run all
+
+# 11. Close simulation to safely dump the WDB file
+close_sim
+
+# 12. Close project 
+close_project

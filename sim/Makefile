@@ -156,8 +156,53 @@ wave:
 _clean:
 	@echo "--- Cleaning ---"
 	rm -rf obj_dir waveform.vcd trace_hart_0.dasm
-	rm -f firmware.bin firmware.elf spike_trace.log
+	rm -f firmware.bin firmware.elf spike_trace.log firmware_syn.hex firmware_syn.elf
 	rm -f $(SPIKE_DIR)/firmware.elf
 
 clean: _clean
+
+# ==============================================================================
+# Post-Synthesis Simulation Targets
+# ==============================================================================
+
+.PHONY: post-syn-sim-32 post-syn-sim-64
+
+post-syn-sim-32:
+	@echo "========================================================="
+	@echo "1. Compiling firmware for 32-bit post-synthesis..."
+	@echo "========================================================="
+	riscv-none-elf-gcc -march=rv32imac -mabi=ilp32 -nostdlib \
+		-T $(BENCH_LINK)/link-syn.ld $(BENCH_SRC)/main-syn.S -o firmware_syn.elf
+	
+	@echo "========================================================="
+	@echo "2. Generating Hex File (firmware_syn.hex)..."
+	@echo "========================================================="
+	riscv-none-elf-objcopy -O verilog --verilog-data-width=4 \
+		--change-addresses -0x80000000 firmware_syn.elf firmware_syn.hex
+	
+	@echo "========================================================="
+	@echo "3. Running Vivado Post-Synthesis Simulation (32-bit)..."
+	@echo "========================================================="
+	mkdir -p ../fpga/build
+	cd ../fpga/build && vivado -mode batch -source ../vivado/cv32a6_imac_sv32_post_syn_sim.tcl
+
+
+post-syn-sim-64:
+	@echo "========================================================="
+	@echo "1. Compiling firmware for 64-bit post-synthesis..."
+	@echo "========================================================="
+	riscv-none-elf-gcc -march=rv64imafdc -mabi=lp64d -nostdlib \
+		-T $(BENCH_LINK)/link-syn.ld $(BENCH_SRC)/main-syn.S -o firmware_syn.elf
+	
+	@echo "========================================================="
+	@echo "2. Generating Hex File (firmware_syn.hex)..."
+	@echo "========================================================="
+	riscv-none-elf-objcopy -O verilog --verilog-data-width=4 \
+		--change-addresses -0x80000000 firmware_syn.elf firmware_syn.hex
+	
+	@echo "========================================================="
+	@echo "3. Running Vivado Post-Synthesis Simulation (64-bit)..."
+	@echo "========================================================="
+	mkdir -p ../fpga/build
+	cd ../fpga/build && vivado -mode batch -source ../vivado/cv64a6_imafdc_sv39_post_syn_sim.tcl
 

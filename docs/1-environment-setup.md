@@ -126,24 +126,9 @@ This pulls in the three core submodules the project depends on:
 
 | Submodule | Role |
 |---|---|
-| `axi` |s break after a `git pull`, this is your fallback.
-
----
-
-### 2.2 Initializing Submodules
-
-If you cloned without `--recursive`, initialize explicitly:
-
-```bash
-git submodule update --init --recursive
-```
-
-This pulls in the three core submodules the project depends on:
-
-| Submodule | Role |
-|---|---|
 | `axi` | AXI bus protocol IPs |
-| `common_cells` |e state:**
+| `common_cells` | Common SystemVerilog components |
+| `tech_cells_generic` | Generic technology cells |
 
 ```bash
 git submodule status
@@ -933,8 +918,8 @@ Work through these in order. Each item links back to the section where the detai
 **System Dependencies ([3](#3-system-dependencies))**
 
 - [ ] APT packages installed (`cmake help2man device-tree-compiler` + GCC prerequisites) ([3.1](#31-apt-packages))
-- [ ] `cmake --version` reports **3.14 or higher** — upgraded via Kitware PPA if needed ([§3.1](#31-apt-packages))
-- [ake --version` reports **3.14 or higher** — upgraded via Kitware PPA if needed ([3.1](#31-apt-packages))
+- [ ] `cmake --version` reports **3.14 or higher** — upgraded via Kitware PPA if needed ([3.1](#31-apt-packages))
+- [ ] `make --version` reports **3.14 or higher** — upgraded via Kitware PPA if needed ([3.1](#31-apt-packages))
 - [ ] Python venv created: `python3 -m venv-risc-v-gcc-toolchain))**
 
 - [ ] `$RISCV` exported and persisted in `~/.bashrc` ([4.2](#42-setting-the-riscv-environment-variable))

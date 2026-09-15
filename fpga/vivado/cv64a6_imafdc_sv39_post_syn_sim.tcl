@@ -456,7 +456,7 @@ set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} -value {-mode out_of_c
 
 # 4. Launch the synthesis process automatically using multiple CPU threads (jobs)
 # You can change "-jobs 8" based on your CPU cores to make it faster
-launch_runs synth_1 -jobs 8
+launch_runs synth_1 -jobs 20
 
 # 5. Wait for the synthesis run to complete before executing the next commands
 # This is crucial for automation so the script doesn't exit prematurely
@@ -472,3 +472,22 @@ report_utilization -file $ROOT/../fpga/build/vivado_prj_cv64a6/utilization_repor
 # (Optional) Generate a timing summary report to check Fmax
 report_timing_summary -file $ROOT/../fpga/build/vivado_prj_cv64a6/timing_summary_report.txt
 
+# ==============================================================================
+# POST-SYNTHESIS FUNCTIONAL SIMULATION
+# ==============================================================================
+
+# 8. Launch Post-Synthesis Functional Simulation
+launch_simulation -mode post-synthesis -type functional
+
+# 9. Log all waveforms to allow post-simulation inspection (.wdb)
+log_wave -r /
+
+# 10. Run the simulation
+# Make sure cva6_tb.sv has a $finish statement, or replace "run all" with e.g. "run 10us"
+run all
+
+# 11. Close simulation to safely dump the WDB file
+close_sim
+
+# 12. Close project 
+close_project

@@ -1,7 +1,7 @@
 CVA6-lab/                       # Main repository root
   ├── benchmarks/               # Software only (formerly firmware)
-  │   ├── src/                  # Source files (main.c, main_mul.S, boot.S, etc.)
-  │   ├── linker/               # Linker scripts (link.ld)
+  │   ├── src/                  # Source files (main.c, main_mul.S, boot.S, Bug_main.S, main.S, main_Complex.S, main_div.c, main_Simple.S, main-syn.S)
+  │   ├── linker/               # Linker scripts (link.ld, link-syn.ld)
   │   └── spike-checking/       # Spike simulation logs
   ├── rtl/                      # Processor RTL only (no testbenches)
   ├── docs/
@@ -22,8 +22,10 @@ CVA6-lab/                       # Main repository root
   │   ├── vivado                # Vivado Tcl scripts
   │   │   ├── cv32a6_imac_sv32.tcl
   │   │   ├── cv32a6_imac_sv32_syn.tcl
+  │   │   ├── cv32a6_imac_sv32_post_syn_sim.tcl
   │   │   ├── cv64a6_imafdc_sv39.tcl
-  │   │   └── cv64a6_imafdc_sv39_syn.tcl
+  │   │   ├── cv64a6_imafdc_sv39_syn.tcl
+  │   │   └── cv64a6_imafdc_sv39_post_syn_sim.tcl
   │   ├── constraints
   │   │   └── cva6_ooc.xdc
   │   └── build/                # (gitignored) All Vivado outputs generated here

@@ -5,6 +5,10 @@
 #   make synth-32
 #   make synth-64
 #
+# Post-Synthesis Simulation (delegates to sim/Makefile):
+#   make post-syn-sim-32
+#   make post-syn-sim-64
+#
 # RTL Simulation (delegates to sim/Makefile):
 #   make sim                          # playground, 64-bit, waveform ON
 #   make sim ARCH=32                  # same, 32-bit
@@ -13,7 +17,7 @@
 #   make clean-sim
 # =============================================================================
 
-.PHONY: all synth-32 synth-64 sim clean-sim help
+.PHONY: all synth-32 synth-64 cva6-32 cva6-64 sim clean-sim post-syn-sim-32 post-syn-sim-64 help
 
 all: help
 
@@ -44,6 +48,14 @@ sim:
 clean-sim:
 	$(MAKE) -C sim clean
 
+# --- Post-Synthesis Simulation -----------------------------------------------
+
+post-syn-sim-32:
+	$(MAKE) -C sim post-syn-sim-32
+
+post-syn-sim-64:
+	$(MAKE) -C sim post-syn-sim-64
+
 # --- Help --------------------------------------------------------------------
 
 help:
@@ -59,6 +71,10 @@ help:
 	@echo "--- FPGA Synthesis (Batch Mode) ---"
 	@echo "  make synth-32         : Run logic synthesis for 32-bit (cv32a6_imac_sv32)"
 	@echo "  make synth-64         : Run logic synthesis for 64-bit (cv64a6_imafdc_sv39)"
+	@echo ""
+	@echo "--- Post-Synthesis Simulation ---"
+	@echo "  make post-syn-sim-32  : Run post-synthesis simulation for 32-bit"
+	@echo "  make post-syn-sim-64  : Run post-synthesis simulation for 64-bit"
 	@echo ""
 	@echo "--- RTL Simulation ---"
 	@echo "  make sim              : Run simulation (Default: ARCH=64, CMD=run)"

@@ -85,7 +85,7 @@ The repository provides a root `Makefile` that automates both GUI-based project 
 | `make cva6-32` | GUI Project Generation | `cv32a6_imac_sv32` (32-bit + Sv32 MMU) | `fpga/vivado/cv32a6_imac_sv32.tcl` |
 | `make cva6-64` | GUI Project Generation | `cv64a6_imafdc_sv39` (64-bit + Sv39 MMU) | `fpga/vivado/cv64a6_imafdc_sv39.tcl` |
 | `make synth-32` | Non-Interactive Batch Synthesis | `cv32a6_imac_sv32` (32-bit + Sv32 MMU) | `fpga/vivado/cv32a6_imac_sv32_syn.tcl` |
-| `make synth-64` | Non-Interactive Batch Synthesis | `cv64a6_imafdc_sv39` (64-bit + Sv39 MMU) | `fpga/vivado/cv64a6_imafdc_sv39.tcl` |
+| `make synth-64` | Non-Interactive Batch Synthesis | `cv64a6_imafdc_sv39` (64-bit + Sv39 MMU) | `fpga/vivado/cv64a6_imafdc_sv39_syn.tcl` |
 
 ---
 
@@ -535,10 +535,12 @@ The two configurations take structurally different approaches to TLB organizatio
 
 **CV32A6-IMAC-SV32 (Sv32):** Private instruction and data TLBs are kept minimal at 2 entries each (`InstrTlbEntries: int'(2)`, `DataTlbEntries: int'(2)` — lines 162–163). To compensate, a shared second-level TLB is enabled (`UseSharedTlb: bit'(1)`, line 164) with a depth of 64 entries (`SharedTlbDepth: int'(64)`, line 166). This two-level arrangement lets the 32-bit configuration maintain reasonable reach without paying the area cost of large private structures.
 
-**CV64A6-IMAFDC-SV39 (Sv39):** Private TLBs are substantially larger at 16 entries each (`InstrTlbEntries: int'(16)`, `DataTlbEntries: int'(16)` — lines 167–168), and the shared TLB is disabled (`UseSharedTlb: bit'(0)`, line 169). The 64-bit target relies entirely on its larger private TLBs. Notably, `SharedTlbDepth` remains set to 64 (line 171) even though the shared TLB is not used; this fieldt to 64 (line 171) even though the shared TLB is not used; this field has no functional effect when `UseSharedTlb = 0`.
+**CV64A6-IMAFDC-SV39 (Sv39):** Private TLBs are substantially larger at 16 entries each (`InstrTlbEntries: int'(16)`, `DataTlbEntries: int'(16)` — lines 167–168), and the shared TLB is disabled (`UseSharedTlb: bit'(0)`, line 169). The 64-bit target relies entirely on its larger private TLBs. Notably, `SharedTlbDepth` remains set to 64 (line 171) even though the shared TLB is not used; this field has no functional effect when `UseSharedTlb = 0`.
 
-The table below summarizes the differenInstrTlbEntries` | 2 | 16 |
-|:---|:---:|:---|
+The table below summarizes the differences:
+| Parameter | CV32A6 (Sv32) | CV64A6 (Sv39) |
+|:---|:---:|:---:|
+| `InstrTlbEntries` | 2 | 16 |
 | `DataTlbEntries` | 2 | 16 |
 | `UseSharedTlb` | 1 | 0 |
 | `SharedTlbDepth` | 64 | 64 (inactive) |
@@ -597,7 +599,7 @@ The instruction cache geometry is the same across both configurations:
 | `IcacheSetAssoc` | 4-way | `CVA6ConfigIcacheSetAssoc` |
 | `IcacheLineWidth` | 128 bits | `CVA6ConfigIcacheLineWidth` |
 
-This yields a 16 KiB, 4-way set-associative instruction cache with 128-bit cache lines. The instruction cache implementation is not parameterized by a type field analogous to `DCacheType` — a single RTL implementation is used in both builds, and it infers cleanly to BRAM on the Genesys 2 target.
+This yields a 16 KiB, 4-way set-associative instruction cache with 128-bit cache lines. The instruction cache implementation is not parameterized by a type field analogous to `DCacheType` — a single RTL implementation is used in both builds, and it infers cleanly to BRAM on the Virtex-7 XC7VX485T target.
 
 ---
 
@@ -611,7 +613,7 @@ The data cache capacity parameters are the same in both packages:
 | `DcacheSetAssoc` | 8-way | `CVA6ConfigDcacheSetAssoc` |
 | `DcacheLineWidth` | 128 bits | `CVA6ConfigDcacheLineWidth` |
 
-A 32 KiB, 8-way set-associative data cache with 128-bit cache lines. Both targets are configured to the same capacity. The geometry alone does not explain any synthesis difference.
+This yields a 32 KiB, 8-way set-associative data cache with 128-bit cache lines. Both targets are configured to the same capacity. The geometry alone does not explain any synthesis difference.
 
 ---
 
@@ -726,12 +728,12 @@ critical path characteristics below.
 
 | Configuration (Core) | Superscalar | LUT | FF | BRAM | DSP | IO |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **32-bit** (`cv32a6_imac_sv32`) | OFF | 135,074 | 327,292 | 16 | 4 | 4,979 |
-| **32-bit** (`cv32a6_imac_sv32`) | ON | 140,181 | 328,223 | 16 | 4 | 5,083 |
+| **32-bit** (`cv32a6_imac_sv32`) | OFF | 135,074 | 327,292 | 16 | 4 | 0 |
+| **32-bit** (`cv32a6_imac_sv32`) | ON | 140,181 | 328,223 | 16 | 4 | 0 |
 | **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 54,326 | 23,728 | 36 | 27 | 0 |
 | **64-bit** (`cv64a6_imafdc_sv39`) | ON | 63,685 | 25,108 | 36 | 27 | 0 |
 
-> *Note: The 64-bit configurations correctly report 0 I/O pins because the synthesis was successfully constrained as strict Out-of-Context (OOC).*
+> *Note: The configurations correctly report 0 I/O pins because the synthesis was constrained as Out-of-Context (OOC).*
 
 #### Visualization
 
@@ -746,7 +748,7 @@ critical path characteristics below.
 #### Key Observation: Why Does the 32-bit Core Consume More LUTs and FFs?
 
 At first glance the numbers appear contradictory: the 32-bit core uses roughly
-**13.5× more flip-flops** than the 64-bit core (327 K vs. 23 K). This is not an
+**13.8× more flip-flops** than the 64-bit core (327 K vs. 23 K). This is not an
 architectural anomaly — it is a **cache-mapping artifact** introduced by Vivado
 during synthesis.
 
@@ -764,7 +766,22 @@ during synthesis.
    (`fpnew`) and accordingly consumes 27 DSP blocks.
 
 4. **The isolated cost of Superscalar execution.**
-   Because the 64-bit variant synthesized cleanly, we can precisely observe the dual-issue overhead. Enabling superscalar in the 64-bit core adds **9,359 LUTs (+17.2%)** and **1,380 FFs**. This increase is entirely logical (with 0 extra DSPs or BRAMs) and directly reflects the added hazard detection logic, operand-forwarding pathways, and expanded multiplexers required inside the Scoreboard to issue two instructions simultaneously.
+   Because the 64-bit variant synthesized cleanly, we can precisely observe the dual-issue overThis yields a 16 KiB, 4-way set-associative instruction cache with 128-bit cache lines. The instruction cache implementation is not parameterized by a type field analogous to `DCacheType` — a single RTL implementation is used in both builds, and it infers cleanly to BRAM on the Genesys 2 target.
+
+---
+
+#### Data Cache Geometry — Also Identical in Both Targets
+
+The data cache capacity parameters are the same in both packages:
+
+| Parameter | Value | Source |
+|:---|:---:|:---|
+| `DcacheByteSize` | 32 KiB | `CVA6ConfigDcacheByteSize` |
+| `DcacheSetAssoc` | 8-way | `CVA6ConfigDcacheSetAssoc` |
+| `DcacheLineWidth` | 128 bits | `CVA6ConfigDcacheLineWidth` |
+
+A 32 KiB, 8-way set-associative data cache with 128-bit cache lines. Both targets are configured to the same capacity. The geometry alone does not explain any synthesis difference.
+head. Enabling superscalar in the 64-bit core adds **9,359 LUTs (+17.2%)** and **1,380 FFs**. This increase is entirely logical (with 0 extra DSPs or BRAMs) and directly reflects the added hazard detection logic, operand-forwarding pathways, and expanded multiplexers required inside the Scoreboard to issue two instructions simultaneously.
 
 ### 3.2 Timing Analysis & Critical Path Evaluation
 
@@ -855,9 +872,42 @@ lower $F_{max}$ means the design closes timing at a lower frequency.
 
 ## 4. Summary and Conclusions
 
-> To be written after all four synthesis and implementation runs are complete.
+Four synthesis runs were completed against the Genesys 2 target (`xc7vx485tffg1157-1`) at a 100 MHz reference clock: both official CVA6 configurations — `cv32a6_imac_sv32` and `cv64a6_imafdc_sv39` — each built once with `SuperscalarEn = 0` and once with `SuperscalarEn = 1`. The results separate cleanly into three independent effects: a cache-implementation artifact on the 32-bit build, an ISA-driven timing penalty on the 64-bit build, and a dual-issue area cost that scales differently across the two widths.
 
-Key questions this section will answer:
-- What is the LUT and register overhead of moving from single-issue to dual-issue at each bitwidth?
-- Does the 64-bit ISA extension (IMAFDC vs IMAC) meaningfully impact the critical path?
-- Which configuration offers the best frequency–area trade-off for the target FPGA part (`xc7a100tcsg324-1`)?
+---
+
+#### Cache Implementation is the Dominant Resource Story on the 32-bit Build
+
+The headline numbers from 3.1 look contradictory on first reading: the 32-bit single-issue build consumes 135,074 LUTs and 327,292 flip-flops against the 64-bit single-issue build's 54,326 LUTs and 23,728 flip-flops. Nothing about the 32-bit ISA subset — no FPU, no Sv39 MMU, no compressed-FP instructions — justifies that gap. The actual cause is `DCacheType = HPDCACHE_WT` in `cv32a6_imac_sv32_config_pkg.sv` (line 67), which selects a data cache implementation whose internal memory structures do not satisfy Vivado's BRAM inference rules. The 32 KiB data cache is synthesized into distributed RAM rather than BRAM tiles, consuming fabric LUTs and FFs instead of the dedicated block storage that the 64-bit `WT` implementation uses. This is why the 64-bit build reports 36 BRAM tiles while the 32-bit build reports only 16, despite both targets having identical cache geometry (2.5). The 32-bit build is not fundamentally larger than the 64-bit build — it is using the wrong storage medium for 32 KiB of D$.
+
+A consequence of this is that comparing total LUT and FF counts across the two targets is not a fair ISA-width comparison. The 32-bit numbers include a ~32 KiB distributed-RAM penalty; the 64-bit numbers do not. Any future evaluation that changes `DCacheType` to `WT` on the 32-bit build, or migrates the 64-bit build to `HPDCACHE_WT`, will significantly alter the LUT and FF totals for that target and should not be read as a change in core logic area.
+
+---
+
+#### ISA Content, Not Datapath Width, Controls the Timing Gap
+
+The 32-bit single-issue build achieves $F_{max} = 72.84$ MHz ($|WNS| = 3.729$ ns). The 64-bit single-issue build achieves $F_{max} = 52.31$ MHz ($|WNS| = 9.118$ ns). That 20.5 MHz gap is not a consequence of the 64-bit datapath being wider or the Sv39 TLB being larger. The 64-bit critical path, detailed in 3.2, runs through `fpnew_cast_multi` and `fpnew_fma_multi` — the floating-point units instantiated by `RVF = 1` and `RVD = 1` in `cv64a6_imafdc_sv39_config_pkg.sv`. The 32-bit configuration sets both flags to zero (2.3), so the `fpnew` macro is not elaborated at all, and the critical path falls instead on the CSR/PMP datapath into the scoreboard — a substantially shorter combinational depth (28 logic levels against the 64-bit build's 45).
+
+This means the comparison between 32-bit and 64-bit timing results is primarily a comparison between an IMAC core and an IMAFDC core. Synthesizing a 64-bit IMAC configuration — keeping `RVF` and `RVD` at zero while switching to `CVA6ConfigXlen = 64` — would be expected to close much of this gap. The timing difference is not an intrinsic property of 32-bit vs 64-bit RISC-V; it is a property of including double-precision FP hardware.
+
+---
+
+#### Dual-Issue Overhead Scales with the Critical Path, Not the Datapath
+
+`SuperscalarEn = 1` costs 5,107 LUTs (+3.78%) and 931 FFs on the 32-bit build, and 9,359 LUTs (+17.2%) and 1,380 FFs on the 64-bit build. The BRAM and DSP totals are unaffected in both cases. The timing cost is 7.41 MHz on the 32-bit build ($F_{max}$ from 72.84 to 65.43 MHz) and 2.23 MHz on the 64-bit build ($F_{max}$ from 52.31 to 50.08 MHz).
+
+The asymmetry is explained by the critical paths. On the 64-bit build, the $F_{max}$-limiting path already runs through the FPU; the additional decode and scoreboard logic introduced by `SuperscalarEn = 1` lengthens a different path that is still shorter than the FPU chain. The dual-issue overhead is masked. On the 32-bit build the FPU is absent, so the dual-issue decode and issue-slot arbitration logic competes directly for the critical path — and the timing degradation is visible. The 17.2% LUT overhead on 64-bit reflects the real structural cost of a second issue slot more honestly than the 3.78% figure on 32-bit, which is suppressed by the distributed-RAM inflation in the single-issue baseline.
+
+---
+
+#### Best Operating Point on `xc7vx485tffg1157-1`
+
+If the goal is maximum $F_{max}$ with the reference configurations as shipped, `cv32a6_imac_sv32` with `SuperscalarEn = 0` achieves the highest frequency at 72.84 MHz, though the HPDCACHE_WT distributed-RAM spill should be treated as a known inefficiency rather than an acceptable baseline.
+
+If the goal is the best BRAM utilization and the most complete ISA coverage the device can support, `cv64a6_imafdc_sv39` with `SuperscalarEn = 0` uses 36 of the 1030 available BRAM tiles on the `Virtex-7 XC7VX485T` (approx. 3.5% utilization). It leaves substantial room for a surrounding SoC. Its $F_{max}$ of 52.31 MHz is constrained by the FPU and would benefit from retiming or a reduced clock target of 50 MHz to close timing cleanly.
+
+Dual-issue on 64-bit (`SuperscalarEn = 1`) adds 9,359 LUTs — roughly a 17% area increase — for a frequency cost of only 2.23 MHz. On a device with spare LUT budget that trade-off is favorable; on a congested build it risks crossing into 50 MHz territory with margin to spare only at 50 MHz, not 100 MHz. All four configurations exceed the device's practical routing capacity at 100 MHz; a constrained place-and-route at 50 MHz would be the next validation step before drawing conclusions about achievable clock rates.
+
+---
+
+> **On the reference configurations:** neither target package is optimized for the Genesys 2 in isolation. Both are reference baselines reflecting upstream OpenHW Group defaults. The `HPDCACHE_WT` selection on the 32-bit target, the FPU inclusion on the 64-bit target, and `SuperscalarEn = 0` on both are configuration choices inherited from those defaults, not Genesys 2-specific tuning decisions. Interpreting the synthesis numbers requires holding those choices fixed as context, not as constraints.

@@ -4,7 +4,10 @@
 // Engineer: AminMaky
 //////////////////////////////////////////////////////////////////////////////////
 
-module cva6_tb;
+module cva6_tb #(
+  // Parameter to switch between 32-bit and 64-bit architectures
+  parameter int XLEN = 64
+);
 
   // ==========================================
   // 1. Clock and Reset
@@ -30,23 +33,23 @@ module cva6_tb;
   
   initial begin
     for (int i = 0; i < 16384; i++) ram[i] = 32'h0;
-    $readmemh("firmware/firmware.hex", ram);
+    $readmemh("../../sim/firmware_syn.hex", ram);
   end
 
   // ==========================================
   // 3. AXI Read Channels & Burst Logic
   // ==========================================
-  logic        noc_ar_valid;
-  logic [63:0] noc_ar_addr;
-  logic [7:0]  noc_ar_len;  // Burst length
-  logic [3:0]  noc_ar_id;   // Transaction ID
-  logic        noc_ar_ready;
+  logic             noc_ar_valid;
+  logic [63:0]      noc_ar_addr;
+  logic [7:0]       noc_ar_len;  // Burst length
+  logic [3:0]       noc_ar_id;   // Transaction ID
+  logic             noc_ar_ready;
   
-  logic        noc_r_valid;
-  logic [63:0] noc_r_data; 
-  logic        noc_r_last;
-  logic [3:0]  noc_r_id;
-  logic        noc_r_ready;
+  logic             noc_r_valid;
+  logic [XLEN-1:0]  noc_r_data; 
+  logic             noc_r_last;
+  logic [3:0]       noc_r_id;
+  logic             noc_r_ready;
   
   typedef enum logic [1:0] {AR_IDLE, R_DATA} axi_r_state_t;
   axi_r_state_t r_state;
@@ -88,8 +91,8 @@ module cva6_tb;
               noc_r_valid  <= 1'b0;
               noc_ar_ready <= 1'b1;
             end else begin
-              // Advance to the next beat within the burst
-              r_addr     <= r_addr + 8; // 64-bit bus (8 bytes)
+              // Advance to the next beat within the burst (depends on XLEN)
+              r_addr     <= r_addr + (XLEN / 8); 
               r_cnt      <= r_cnt + 1;
               noc_r_last <= (r_cnt + 1 == r_len);
             end
@@ -100,27 +103,36 @@ module cva6_tb;
   end
 
   assign noc_r_id = r_id;
-  // Combinational read from RAM
-  assign noc_r_data = (r_state == R_DATA) ? {ram[r_addr[15:2] + 1], ram[r_addr[15:2]]} : 64'b0;
+
+  // Combinational read from RAM depending on architecture (XLEN)
+  generate
+    if (XLEN == 64) begin : gen_read_64
+      wire [13:0] ram_idx = {r_addr[15:3], 1'b0};
+      assign noc_r_data = (r_state == R_DATA) ? {ram[ram_idx + 1], ram[ram_idx]} : 64'b0;
+    end else begin : gen_read_32
+      wire [13:0] ram_idx = r_addr[15:2];
+      assign noc_r_data = (r_state == R_DATA) ? ram[ram_idx] : 32'b0;
+    end
+  endgenerate
 
   // ==========================================
   // 4. AXI Write Channels & Strobe Logic
   // ==========================================
-  logic        noc_aw_valid;
-  logic [63:0] noc_aw_addr;
-  logic [7:0]  noc_aw_len;
-  logic [3:0]  noc_aw_id;
-  logic        noc_aw_ready;
+  logic               noc_aw_valid;
+  logic [63:0]        noc_aw_addr;
+  logic [7:0]         noc_aw_len;
+  logic [3:0]         noc_aw_id;
+  logic               noc_aw_ready;
 
-  logic        noc_w_valid;
-  logic [63:0] noc_w_data;
-  logic [7:0]  noc_w_strb;  // Specifies which bytes must be written
-  logic        noc_w_last;
-  logic        noc_w_ready;
+  logic               noc_w_valid;
+  logic [XLEN-1:0]    noc_w_data;
+  logic [(XLEN/8)-1:0]noc_w_strb;  // Specifies which bytes must be written
+  logic               noc_w_last;
+  logic               noc_w_ready;
 
-  logic        noc_b_valid;
-  logic [3:0]  noc_b_id;
-  logic        noc_b_ready;
+  logic               noc_b_valid;
+  logic [3:0]         noc_b_id;
+  logic               noc_b_ready;
 
   typedef enum logic [1:0] {AW_IDLE, W_DATA, B_RESP} axi_w_state_t;
   axi_w_state_t w_state;
@@ -150,21 +162,28 @@ module cva6_tb;
         W_DATA: begin
           if (noc_w_valid && noc_w_ready) begin
             // Byte-by-byte write for full safety and sb/sh instruction support
-            if (noc_w_strb[0]) ram[w_addr[15:2]][7:0]   <= noc_w_data[7:0];
-            if (noc_w_strb[1]) ram[w_addr[15:2]][15:8]  <= noc_w_data[15:8];
-            if (noc_w_strb[2]) ram[w_addr[15:2]][23:16] <= noc_w_data[23:16];
-            if (noc_w_strb[3]) ram[w_addr[15:2]][31:24] <= noc_w_data[31:24];
-            if (noc_w_strb[4]) ram[w_addr[15:2]+1][7:0]   <= noc_w_data[39:32];
-            if (noc_w_strb[5]) ram[w_addr[15:2]+1][15:8]  <= noc_w_data[47:40];
-            if (noc_w_strb[6]) ram[w_addr[15:2]+1][23:16] <= noc_w_data[55:48];
-            if (noc_w_strb[7]) ram[w_addr[15:2]+1][31:24] <= noc_w_data[63:56];
+            if (XLEN == 64) begin
+              if (noc_w_strb[0]) ram[{w_addr[15:3], 1'b0}][7:0]   <= noc_w_data[7:0];
+              if (noc_w_strb[1]) ram[{w_addr[15:3], 1'b0}][15:8]  <= noc_w_data[15:8];
+              if (noc_w_strb[2]) ram[{w_addr[15:3], 1'b0}][23:16] <= noc_w_data[23:16];
+              if (noc_w_strb[3]) ram[{w_addr[15:3], 1'b0}][31:24] <= noc_w_data[31:24];
+              if (noc_w_strb[4]) ram[{w_addr[15:3], 1'b0}+1][7:0]   <= noc_w_data[39:32];
+              if (noc_w_strb[5]) ram[{w_addr[15:3], 1'b0}+1][15:8]  <= noc_w_data[47:40];
+              if (noc_w_strb[6]) ram[{w_addr[15:3], 1'b0}+1][23:16] <= noc_w_data[55:48];
+              if (noc_w_strb[7]) ram[{w_addr[15:3], 1'b0}+1][31:24] <= noc_w_data[63:56];
+            end else begin
+              if (noc_w_strb[0]) ram[w_addr[15:2]][7:0]   <= noc_w_data[7:0];
+              if (noc_w_strb[1]) ram[w_addr[15:2]][15:8]  <= noc_w_data[15:8];
+              if (noc_w_strb[2]) ram[w_addr[15:2]][23:16] <= noc_w_data[23:16];
+              if (noc_w_strb[3]) ram[w_addr[15:2]][31:24] <= noc_w_data[31:24];
+            end
 
             if (noc_w_last) begin
               w_state     <= B_RESP;
               noc_w_ready <= 1'b0;
               noc_b_valid <= 1'b1;
             end else begin
-              w_addr <= w_addr + 8;
+              w_addr <= w_addr + (XLEN / 8); // Increment depending on XLEN
             end
           end
         end
