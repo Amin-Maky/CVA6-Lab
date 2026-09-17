@@ -39,7 +39,7 @@ OBJCOPY  = riscv-none-elf-objcopy
 SPIKE    = spike
 
 # --- 3. Build defaults (overridden by run targets) ---------------------------
-PROG_SRC    ?= $(BENCH_SRC)/main.S
+PROG_SRC    ?= $(BENCH_SRC)/main_$(ARCH).S
 TB_CPP      ?= tb_cva6_ww.cpp
 TRACE_FLAGS ?= --trace --trace-structs
 
@@ -67,27 +67,27 @@ all: run
 
 # --- 6. Run modes ------------------------------------------------------------
 
-# Playground: main.S, waveform ON  →  make [ARCH=32|64] run
+# Playground: main_32.S or main_64.S, waveform ON
 run:
 	@echo "=== Playground ($(ARCH)-bit, waveform) ==="
 	$(MAKE) _pipeline \
-	    PROG_SRC=$(BENCH_SRC)/main.S \
+	    PROG_SRC=$(BENCH_SRC)/main_$(ARCH).S \
 	    TB_CPP=$(TB_CPP_DIR)/tb_cva6_ww.cpp \
 	    TRACE_FLAGS="--trace --trace-structs"
 
-# Complex benchmark: main_Complex.S, waveform OFF
+# Complex benchmark: complex_32.S or complex_64.S, waveform OFF
 run_complex:
 	@echo "=== Complex Benchmark ($(ARCH)-bit, no waveform) ==="
 	$(MAKE) _pipeline \
-	    PROG_SRC=$(BENCH_SRC)/main_Complex.S \
+	    PROG_SRC=$(BENCH_SRC)/complex_$(ARCH).S \
 	    TB_CPP=$(TB_CPP_DIR)/tb_cva6_wow.cpp \
 	    TRACE_FLAGS=""
 
-# Bug hunting: Bug_main.S, waveform ON
+# Bug hunting: Bug_32.S or Bug_64.S, waveform ON
 run_bug:
 	@echo "=== Bug Hunting ($(ARCH)-bit, waveform) ==="
 	$(MAKE) _pipeline \
-	    PROG_SRC=$(BENCH_SRC)/Bug_main.S \
+	    PROG_SRC=$(BENCH_SRC)/Bug_$(ARCH).S \
 	    TB_CPP=$(TB_CPP_DIR)/tb_cva6_ww.cpp \
 	    TRACE_FLAGS="--trace --trace-structs"
 
@@ -95,7 +95,7 @@ run_bug:
 run_matmul:
 	@echo "=== Matrix Multiply Benchmark ($(ARCH)-bit, no waveform) ==="
 	$(MAKE) _pipeline \
-	    PROG_SRC="$(BENCH_SRC)/boot.S $(BENCH_SRC)/main_matmul.c" \
+	    PROG_SRC="$(BENCH_SRC)/boot.S $(BENCH_SRC)/matmul.c" \
 	    TB_CPP=$(TB_CPP_DIR)/tb_cva6_wow.cpp \
 	    TRACE_FLAGS=""
 
@@ -103,7 +103,7 @@ run_matmul:
 run_avg:
 	@echo "=== Array Average Benchmark ($(ARCH)-bit, no waveform) ==="
 	$(MAKE) _pipeline \
-	    PROG_SRC="$(BENCH_SRC)/boot.S $(BENCH_SRC)/main_avg.c" \
+	    PROG_SRC="$(BENCH_SRC)/boot.S $(BENCH_SRC)/avg.c" \
 	    TB_CPP=$(TB_CPP_DIR)/tb_cva6_wow.cpp \
 	    TRACE_FLAGS=""
 

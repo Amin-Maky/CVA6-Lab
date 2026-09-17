@@ -544,19 +544,587 @@ Seeing this transaction is the definition of success for the entire flow: the sy
 
 ## 2. Developer Simulation Flow (cva6.py + Verilator + Spike)
 
-### 2.1 Running the Default Test Suite
+**Goal.** Build a complete mental model of the CVA6 simulation toolchain — from running the default test suite to writing custom programs, tracing RTL signals, and understanding the HTIF communication layer behind all bare-metal I/O.
+
+**Why this section exists.** Section 1 validated a synthesized netlist against a pre-built testbench. This section inverts that: it hands you control over what the core executes, how you instrument it, and how you interpret what you see. The `cva6.py` script wraps compilation, Verilator elaboration, and Spike co-simulation into a single command — but that convenience hides several non-obvious layers. Understanding those layers is the difference between running a test and actually debugging hardware.
+
+**Prerequisites.** The environment from [`1-environment-setup.md`](1-environment-setup.md) must be complete: RISC-V toolchain, Verilator, Spike, and the CVA6 repository all confirmed working. The Vivado flow from Section 1 is not required; this section is fully independent.
+
+**What this section covers.**
+
+- **2.1 Running the Default Test Suite** — verifying the toolchain by executing the smoke-test script and interpreting its pass/fail output.
+- **2.2 Custom C and Assembly Programs** — writing, cross-compiling, and running your own programs; understanding the flags and linker script that make them compatible with CVA6.
+- **2.3 Waveform Debugging & Architectural Signal Analysis** — generating `.vcd` traces from small assembly tests and navigating pipeline signals in GTKWave to observe fetch, decode, issue, and commit in real time.
+- **2.4 C Code Analysis & HTIF Communication Mechanism** — disassembling output with `objdump`, tracing the path from `printf` down to a raw `tohost` write, and understanding why HTIF is the only I/O path available in a Verilator simulation.
+- **2.5 Conclusion: End-to-End Proof of Functionality** — correlating C source, disassembly, waveform, and Spike reference output into a single coherent verification argument.
+
+**Expected cost and outcome.** Sections 2.1–2.2 take roughly 30–60 minutes including compilation. Waveform exploration in 2.3 is open-ended; a first pass takes about an hour. After completing this section, every layer of the CVA6 execution path — from C source down to RTL toggle — is something you can directly observe and reproduce.
+
+---
+
+### 2.1 Running the Default Test Suite (smoke test)
+
+The smoke test is a quick validation suite that confirms the core, toolchain, and simulators are working correctly. It runs a small set of regression tests and compares Verilator traces against Spike.
+
+**Choose your target configuration** and run the corresponding smoke test script:
+
+```bash
+bash verif/regress/smoke-tests-<cpu_version>.sh
+```
+
+Replace `<cpu_version>` with one of the following:
+
+- **`cv32a65x`** — 32-bit core with extensions
+- **`cv32a6_imac_sv32`** — 32-bit core with I, M, A, C extensions and Sv32 MMU
+- **`cv64a6_imafdc_sv39`** — 64-bit core with I, M, A, F, D, C extensions and Sv39 MMU
+
+**Example:**
+
+```bash
+bash verif/regress/smoke-tests-cv32a6_imac_sv32.sh
+```
+
+---
+
+#### What the Smoke Test Does
+
+The smoke test:
+
+1. **Compiles test programs** using the RISC-V toolchain
+2. **Runs them on Verilator** (hardware simulation)
+3. **Runs them on Spike** (ISA reference simulator)
+4. **Compares execution traces** between the two
+5. **Reports PASS/FAIL** for each test
+
+If all tests pass, your environment is correctly configured.
+
+---
+
 ### 2.2 Custom C and Assembly Programs
-### 2.3 Waveform Generation (`.vcd` / `.fst`)
-### 2.4 GTKWave Debugging
-### 2.5 HTIF Protocol (`tohost` / `fromhost`)
+
+After successfully passing the smoke tests, you can now run your own custom test programs on the CVA6 core. This section covers compiling C and assembly code, generating waveforms for debugging, and analyzing simulation results.
+
+#### Setting Up Simulation Environment
+
+Navigate to the simulation directory and configure the environment:
+
+```bash
+cd cva6/verif/sim
+source verif/sim/setup-env.sh
+```
+
+Set the simulators to use:
+
+```bash
+export DV_SIMULATORS=veri-testharness,spike
+```
+
+Enable parallel builds:
+
+```bash
+export NUM_JOBS=$(nproc)
+```
+
+---
+
+#### Enabling Waveform Output
+
+To generate VCD waveform files for debugging in GTKWave, you must enable trace generation before running the simulation.
+
+**Set trace environment variables:**
+
+```bash
+export TRACE_FAST=1
+unset TRACE_COMPACT
+```
+
+- **`TRACE_FAST=1`:** Enables fast VCD waveform generation
+- **`unset TRACE_COMPACT`:** Disables compact trace mode (discovered through experimentation; not documented in official README)
+
+> **Why `unset TRACE_COMPACT`?** By default, the simulation framework may use a compact trace format that is not compatible with GTKWave. Unsetting this variable ensures full VCD output.
+
+---
+
+#### Running a Custom C Test
+
+The CVA6 verification framework uses `cva6.py` to orchestrate test compilation, simulation, and trace comparison.
+
+**Example: Running a simple C program**
+
+```bash
+cd verif/sim
+python3 cva6.py --target cv32a6_imac_sv32 --iss=$DV_SIMULATORS --iss_yaml=cva6.yaml \
+--c_tests ../tests/custom/hello_world/hello_world.c \
+--linker=../../config/gen_from_riscv_config/linker/link.ld \
+--gcc_opts="-static -mcmodel=medany -fvisibility=hidden -nostdlib \
+-nostartfiles -g ../tests/custom/common/syscalls.c \
+../tests/custom/common/crt.S -lgcc \
+-I../tests/custom/env -I../tests/custom/common"
+```
+
+**Command breakdown:**
+
+- **`--target cv32a6_imac_sv32`:** Specifies the CVA6 core configuration (32-bit with I, M, A, C extensions and Sv32 MMU)
+- **`--iss=$DV_SIMULATORS`:** Uses both Verilator and Spike for simulation and comparison
+- **`--iss_yaml=cva6.yaml`:** Configuration file for the ISA simulator
+- **`--c_tests`:** Path to your C source file
+- **`--linker`:** Linker script that defines memory layout
+- **`--gcc_opts`:** Compilation flags:
+  - **`-static`:** Static linking (no dynamic libraries)
+  - **`-mcmodel=medany`:** Medium any code model for RISC-V (allows access to full address space)
+  - **`-fvisibility=hidden`:** Hide symbols by default
+  - **`-nostdlib -nostartfiles`:** Don't link standard library or default startup files (bare-metal)
+  - **`-g`:** Include debug information
+  - **`syscalls.c` and `crt.S`:** Required runtime support files for syscalls and hardware initialization.
+
+---
+
+#### Running a Custom Assembly Test
+
+To run assembly-based tests, replace `--c_tests` with `--asm_tests`.
+
+```bash
+python3 cva6.py --target cv32a6_imac_sv32 --iss=$DV_SIMULATORS --iss_yaml=cva6.yaml \
+--asm_tests ../tests/custom/hello_world/custom_test_template.S \
+--linker=../../config/gen_from_riscv_config/linker/link.ld \
+--gcc_opts="-static -mcmodel=medany -fvisibility=hidden -nostdlib \
+-nostartfiles ../tests/custom/common/syscalls.c \
+../tests/custom/common/crt.S -lgcc \
+-I../tests/custom/env -I../tests/custom/common"
+```
+
+---
+
+#### Cleaning Simulation Outputs
+
+If you need to re-run a simulation cleanly, you must remove the generated output directories, which contain the VCD files, logs, and compiled binaries from previous runs.
+
+```bash
+cd verif/sim
+rm -rf out_<date_timestamp>
+```
+
+---
+
+### 2.3 Waveform Debugging & Architectural Signal Analysis
+
+After a successful simulation, a `.vcd` file is generated in the `out_...` directory. Open it with GTKWave to view the signal traces:
+
+```bash
+gtkwave <path_to_vcd_file>
+```
+
+The next challenge is understanding what happened inside the processor. This section covers how to navigate the CVA6 architecture in GTKWave, locate critical hardware modules, and interpret register file activity during program execution.
+
+---
+#### Why Simple Tests Matter for Debugging
+
+While `hello_world.c` demonstrates full functionality, it generates **thousands of signal transitions** across the entire processor pipeline, making manual inspection extremely difficult.
+
+For learning and debugging, use **minimal assembly tests** that execute only a few instructions. This allows you to:
+
+- Clearly see the effect of each instruction on the register file
+- Understand pipeline stages without noise
+- Verify arithmetic/logic operations manually
+- Distinguish between your code and startup/shutdown routines
+
+---
+
+#### Example: A Minimal XOR Test
+
+Create a simple assembly test that performs an XOR operation:
+
+```assembly
+.globl main
+main:
+  # Core test logic
+  li a0, 0xCAFE;       # Load 0xCAFE into register a0
+  li a1, 0xCAFE;       # Load 0xCAFE into register a1
+  xor a2, a0, a1;      # XOR a0 and a1, store result in a2
+  beqz a2, pass;       # Branch to 'pass' if a2 == 0
+
+fail:
+  li a0, 0x0;
+  jal exit;
+
+pass:
+  li a0, 0x0;
+  jal exit;
+```
+
+**Expected behavior:**
+
+- `a0` and `a1` both receive `0xCAFE`
+- `a2 = a0 XOR a1 = 0x00000000` (XOR of identical values is always zero)
+- Branch to `pass` is taken because `a2 == 0`
+
+> **Note:** CVA6's verification framework uses **Spike** (a RISC-V ISA simulator) as a golden reference. Spike extracts expected signal values from your code and compares them against Verilator's RTL simulation. If they match, the test passes. However, for deeper understanding, we analyze the waveforms manually rather than relying solely on automated pass/fail results.
+
+---
+
+#### Navigating the CVA6 Architecture in GTKWave
+
+CVA6 is an **out-of-order processor**, meaning its pipeline structure differs from simple in-order designs. The register file is not located in the Decode stage — it resides in the **Issue stage**.
+
+**Hierarchical path to the register file:**
+
+    TOP
+    └── ariane_testharness      (top-level testbench)
+        └── i_ariane            (CVA6 core wrapper)
+            └── i_cva6          (CVA6 processor core)
+                └── issue_stage_i               (Issue stage)
+                    └── i_issue_read_operands   (Operand read logic)
+                        └── gen_asic_regfile
+                            └── i_ariane_regfile   (Register file)
+
+
+**How to locate it in GTKWave:**
+
+1. Open your VCD file in GTKWave
+2. In the **SST (Signal Search Tree)** panel on the left, expand modules in this order:
+   - `TOP`
+   - `ariane_testharness`
+   - `i_ariane`
+   - `i_cva6`
+   - `issue_stage_i`
+   - `i_issue_read_operands`
+   - `gen_asic_regfile`
+   - `i_ariane_regfile`
+
+3. Click on `i_ariane_regfile` to see its signals in the **Signals panel** below
+![GTKWave Module Hierarchy](sim-waveform-1.jpg)  
+*Figure 1: Navigating the CVA6 module hierarchy to locate the register file in GTKWave*
+---
+
+#### Selecting Register File Signals
+
+The register file contains an array called `mem[0..31]`, where each entry corresponds to a RISC-V register:
+
+- `mem[0]` = `x0` (hardwired to zero)
+- `mem[10]` = `a0` (first argument register)
+- `mem[11]` = `a1` (second argument register)
+- `mem[12]` = `a2` (third argument register)
+- ...and so on
+
+**Insert these signals into the waveform viewer:**
+
+1. Select `clk_i` (clock signal)
+2. Select `rst_ni` (active-low reset)
+3. Select `mem[10]` (register `a0`)
+4. Select `mem[11]` (register `a1`)
+5. Select `mem[12]` (register `a2`)
+6. Click **Insert** to add them to the waveform view
+
+![Register File Signals with XOR Result](sim-waveform-2.jpg)
+*Figure 2: Register file signals validating the functional integrity of the design (pay close attention to the highlighted signals).*
+
+> **Tip:** The magnifying glass icon in GTKWave is for **searching within the currently selected module's signals**, not for navigating the module hierarchy.
+
+---
+
+#### Analyzing the Waveform
+
+Open your VCD file:
+
+```bash
+gtkwave <path_to_vcd>/custom_test_template.cv32a6_imac_sv32.vcd
+```
+
+**What to observe:**
+
+#### 1. **Initialization (Startup Code)**
+
+Before your `main` function executes, the register file experiences **many transitions**. This is caused by:
+
+- **`crt.S` (C Runtime):** Code that initializes the stack pointer (`sp`), global pointer (`gp`), and zeroes out `.bss` segments before jumping to `main`.
+- **Syscalls:** If your code uses standard library functions (like `printf`), the call is routed through the custom `write` function in `syscalls.c`, which sends data directly via HTIF (memory-mapped write to `tohost`) — not through a standard OS-level `ECALL`.
+
+*You will see `a0`, `a1`, and `a2` change frequently during this setup phase.*
+
+![Initialization Phase Waveform](sim-waveform-3.jpg)
+*Figure 3: Heavy register activity during initialization before `main` execution*
+
+#### 2. **Execution (Main Code)**
+
+Once the program reaches `main` (the point of interest):
+
+1. **`li a0, 0xCAFE`:** Monitor `mem[10]`. It should jump to `0x0000CAFE` at the next rising clock edge.
+2. **`li a1, 0xCAFE`:** Monitor `mem[11]`. It should jump to `0x0000CAFE`.
+3. **`xor a2, a0, a1`:** Monitor `mem[12]`. It should become `0x00000000`.
+
+*If these transitions occur exactly as predicted, your RTL implementation of the Integer Unit and Register File is functioning correctly.*
+
+---
+
+### 2.4 C Code Analysis & HTIF Communication Mechanism
+
+After validating the basic functionality of CVA6 with simple assembly tests, the next step is to understand how **high-level C code translates to hardware execution** and how the simulated processor communicates with the outside world for I/O operations like `printf`.
+
+This section covers:
+- **Disassembly analysis:** Reading the compiled object dump to trace variable-to-register mapping
+- **Loop verification:** Monitoring register values to confirm correct program flow
+- **HTIF discovery:** Understanding why UART signals remain idle and how bare-metal `printf` actually works
+
+---
+
+#### Test Program: A Simple Loop with Accumulation
+
+To validate correct execution, we'll use a C program that performs an **accumulation loop** before exiting:
+
+```c
+#include <stdint.h>
+#include <stdio.h>
+
+int main(int argc, char* argv[]) {
+  
+  printf("%d: Hello World !", 0);
+  
+  int a = 0;
+  for (int i = 0; i < 5; i++)
+  {
+    a += i;
+  }
+  return 0;
+}
+```
+
+**Expected behavior:**
+
+- `a` starts at `0`
+- Loop iterates 5 times: `i = 0, 1, 2, 3, 4`
+- Each iteration: `a += i`
+- Final value: `a = 0 + 1 + 2 + 3 + 4 = 10 (0x0000000A)`
+
+By identifying which **registers** the compiler assigns to `a` and `i`, we can monitor them in GTKWave and verify that the hardware correctly executes the loop.
+
+---
+
+#### Generating the Disassembly (Object Dump)
+
+To see how the compiler translated our C code into RISC-V assembly, we generate a **disassembly** using `objdump`:
+
+```bash
+$RISCV/bin/riscv-none-elf-objdump -d <path_to_elf_file> > hello_world.dump
+```
+
+The `.dump` file contains:
+- **Memory addresses** (left column)
+- **Machine code** (hex, middle column)
+- **Assembly instructions** (right column)
+
+> **Note:** This file is **large** because a single `printf` call expands into hundreds of assembly instructions for string formatting, memory operations, and system call setup.
+
+---
+
+#### Locating the `main` Function
+
+Search for the `main` function in the dump file:
+
+```assembly
+80003000 <main>:
+80003000:  7179                  add   sp,sp,-48
+80003002:  d606                  sw    ra,44(sp)
+80003004:  d422                  sw    s0,40(sp)
+80003006:  1800                  add   s0,sp,48
+80003008:  fca42e23              sw    a0,-36(s0)
+8000300c:  fcb42c23              sw    a1,-40(s0)
+80003010:  4581                  li    a1,0
+80003012:  00002517              auipc a0,0x2
+80003016:  fee50513              add   a0,a0,-18 # 80005000 <_end_text>
+8000301a:  675000ef              jal   80003e8e <printf>
+8000301e:  fe042623              sw    zero,-20(s0)
+80003022:  fe042423              sw    zero,-24(s0)
+80003026:  a829                  j     80003040 <main+0x40>
+80003028:  fec42703              lw    a4,-20(s0)
+8000302c:  fe842783              lw    a5,-24(s0)
+80003030:  97ba                  add   a5,a5,a4
+80003032:  fef42623              sw    a5,-20(s0)
+80003036:  fe842783              lw    a5,-24(s0)
+8000303a:  0785                  add   a5,a5,1
+8000303c:  fef42423              sw    a5,-24(s0)
+80003040:  fe842703              lw    a4,-24(s0)
+80003044:  4791                  li    a5,4
+80003046:  fee7d1e3              bge   a5,a4,80003028 <main+0x28>
+8000304a:  4781                  li    a5,0
+8000304c:  853e                  mv    a0,a5
+8000304e:  50b2                  lw    ra,44(sp)
+80003050:  5422                  lw    s0,40(sp)
+80003052:  6145                  add   sp,sp,48
+80003054:  8082                  ret
+```
+
+**Column structure:**
+- **Left:** Memory address (e.g., `80003008`)
+- **Middle:** Machine code in hex (e.g., `fca42e23`)
+- **Right:** Assembly instruction (e.g., `sw a0,-36(s0)`)
+
+---
+
+#### Analysis: Identifying Register Assignments
+
+##### **Section 1: Prologue and `printf` Call (80003000 – 8000301a)**
+
+- **80003000 – 80003006:** Stack frame setup. Allocates 48 bytes on the stack, saves return address (`ra`) and frame pointer (`s0`).
+- **80003008 – 8000300c:** Stores function arguments `argc` and `argv` onto the stack at offsets `-36(s0)` and `-40(s0)`.
+- **80003010:** Loads `0` i.e., the first argument of `printf` (`%d: Hello World !`, 0) into `a1`.
+- **8000301a:** Calls `printf` (address `80003e8e`).
+
+##### **Section 2: Loop Initialization (8000301e – 80003026)**
+
+- **8000301e:** Sets local variable `a` to `0` (stored on stack at `-20(s0)`).
+- **80003022:** Sets loop index `i` to `0` (stored on stack at `-24(s0)`).
+- **80003026:** Jumps unconditionally to `80003040` to evaluate the loop condition.
+
+##### **Section 3: The Loop (80003028 – 8000303c)**
+
+This is where the actual accumulation happens:
+
+- **80003028:** Loads variable `a` into register `a4`.
+- **8000302c:** Loads variable `i` into register `a5`.
+- **80003030:** `add a5, a5, a4` -> Adds `i` to `a` and stores result in `a5`.
+- **80003032:** Stores the new `a` back to the stack `-20(s0)`.
+- **80003036:** Loads `i` into `a5`.
+- **8000303a:** `add a5, a5, 1` -> Increment `i`.
+- **8000303c:** Stores incremented `i` back to the stack `-24(s0)`.
+
+> **Compiler register reuse — `a5`:** Notice that `a5` serves a dual role within each iteration. At `0x80003030`, it transiently holds the running sum (`a + i`). At `0x8000303a`, the compiler reuses the same register as the loop counter for incrementing `i`. In GTKWave, `mem[15]` will therefore toggle between the partial accumulation result and the updated index within a single clock-cycle window. This is a direct artifact of GCC's register allocator and is expected, correct behavior.
+
+##### **Section 4: Loop Condition (80003040 – 80003046)**
+
+- **80003040:** Loads the updated `i` into `a4`.
+- **80003044:** Loads `4` into `a5`.
+- **80003046:** `bge a5, a4, 80003028` -> If `4 >= i`, branch back to the start of the loop (`80003028`).
+
+---
+
+#### The HTIF (Host-Target Interface) Mystery
+
+If you inspect the GTKWave signals, you will notice that the `UART_TX` line is **completely silent** (stays high/idle).
+
+**Why?**
+The CVA6 environment is set up for bare-metal simulation. It doesn't include a fully synthesized UART peripheral by default. Instead, it uses **HTIF** to communicate with the host.
+
+1.  **Memory-Mapped Write:** When `printf` executes, it performs a store operation to a specific memory address (often referred to as `tohost`).
+2.  **Simulation Detection:** The CVA6 Verilator testbench monitors the memory bus. When it detects a store to the `tohost` address, it interprets the data as a character or command and prints it to the simulation console.
+3.  **Efficiency:** This allows fast console output without needing to simulate the timing of a slow UART serial interface.
+
+![HTIF Memory Bus Activity](sim-waveform-4.jpg)
+*Figure 4: Comparing I/O candidate modules. The `UART` bus (blue) stays idle while `i_sram` (yellow) shows the actual memory-mapped write activity used by HTIF.*
+
+**Debug Tip:**
+If your code hangs before printing, check the `tohost` signal in GTKWave. If you see the value `0x00000001` or similar being written to that address, the processor is trying to send data via HTIF, but the host might be waiting for more data, or the program might have crashed before completing the transfer.
+
+---
+
+#### Verification Steps in GTKWave
+
+1.  **Add Signals:**
+    *   Find `i_issue_read_operands` in the hierarchy.
+    *   Monitor the inputs/outputs corresponding to register reads (`rs1`, `rs2`) and writes (`rd`).
+2.  **Monitor Registers `a4` and `a5`:**
+    *   Watch their transitions as the simulation passes address `80003030` (the add instruction).
+    *   Confirm that `a5` correctly updates to `1, 3, 6, 10`.
+    ![Register File Loop Verification](sim-waveform-5.jpg)
+*Figure 5: Register file activity showing `mem[14]` (a4) and `mem[15]` (a5) accumulating the loop values (1, 3, 6, 10) exactly as predicted from the disassembly.*
+
+3.  **Confirm Loop Termination:**
+    *   Watch the branch instruction at `80003046`.
+    *   Verify that once `a4` (the index) exceeds `4`, the branch is *not* taken, and the program flows to the `ret` instruction.
+
+---
+
+#### Final Verification: Catching the ASCII on the Bus
+
+Verifying the loop registers (`a4`/`a5`) proves the **computation** is correct, but it doesn't prove the **I/O path** works. The final piece of evidence is catching the actual `"Hello World !"` characters as raw bytes on the memory write bus.
+
+Since `printf` in this bare-metal environment ultimately writes characters through memory-mapped HTIF stores, each character of the string must appear — as its ASCII code — on the write-data bus (`wdata_i`) of the memory subsystem.
+
+**ASCII Reference for the Expected String:**
+
+| Char | `H`  | `e`  | `l`  | `l`  | `o`  | ` `  | `W`  | `o`  | `r`  | `l`  | `d`  | ` `  | `!`  |
+|------|------|------|------|------|------|------|------|------|------|------|------|------|------|
+| Hex  | 0x48 | 0x65 | 0x6C | 0x6C | 0x6F | 0x20 | 0x57 | 0x6F | 0x72 | 0x6C | 0x64 | 0x20 | 0x21 |
+
+**Observation in GTKWave:**
+
+Between roughly `5200 ps` and `5500 ps`, the register file entries `mem[14]` (a4) and `mem[15]` (a5) and the memory bus show the character bytes moving through the datapath: `0x48`, `0x65`, `0x6C`, `0x6C`, `0x6F` — spelling out `H`, `e`, `l`, `l`, `o`.
+
+![ASCII characters on the memory bus](sim-waveform-6.jpg)
+*Figure 6: The ASCII codes of "Hello" (0x48, 0x65, 0x6C, 0x6C, 0x6F) captured on the write-data path. Each byte matches the reference table above, proving the string physically traversed the hardware.*
+
+> **Note:** Even though we configured CVA6 as a 32-bit core (`cv32a6`), the underlying memory bus interface (e.g., AXI) remains 64 bits wide. Depending on how the runtime buffers the string, a single bus transaction may carry **multiple characters packed into one word** (e.g., `0x6C6C65480000...`), or characters may appear one-by-one in the low byte. Either way, the ASCII values are identifiable by inspecting the byte lanes of `wdata_i`.
+
+**Clarifying the `tohost` value:**
+
+A common point of confusion: near the end of simulation, `tohost` is written with the value `1`. This is **not** character data. In the HTIF protocol, writing `(exit_code << 1) | 1` to `tohost` signals program termination — so a value of `1` means `exit_code = 0`, i.e., **the program finished successfully** (matching `return 0;` in `main`).
+
+---
+
+### 2.5 Conclusion: End-to-End Proof of Functionality
+
+At this point, the verification chain is complete at every level of abstraction:
+
+1. **Software level:** The C source compiles to the expected RISC-V assembly (confirmed via `objdump`).
+2. **Computation level:** The register file shows `a4`/`a5` accumulating `1, 3, 6, 10` — the loop executes exactly as the disassembly predicts (Figure 5).
+3. **I/O level:** The ASCII bytes of `"Hello World !"` are physically observed on the memory write bus (Figure 6), confirming the HTIF path from `printf` down to RTL signals.
+4. **Termination level:** `tohost = 1` confirms a clean exit with code `0`.
+
+This closes the loop between **what the programmer wrote** and **what the silicon (simulated RTL) actually did** — an end-to-end proof that the CVA6 core, the toolchain, and the simulation environment all function correctly together.
 
 ---
 
 ## 3. Manual Simulation from Scratch (Standalone Verilator)
+
+---
+
+### 3.0 Overview & Motivation
+
+#### Background
+
+> The previous two sections ([Developer Simulation Flow](#2-developer-simulation-flow-cva6py--verilator--spike) and [Post-Synthesis Simulation](#1-post-synthesis-simulation-vivado--xsim) covered the automated simulation flow and post-synthesis verification. Both are useful for confirming correctness, but neither exposes what is actually happening cycle-by-cycle inside the core.
+
+This guide takes a different approach: build the simulation by hand, instrument every layer of the stack, and use a co-simulation reference to validate the results. By the end of this guide you will have:
+
+- A working Verilator simulation driven from a custom C++ testbench
+- A **Golden Reference** trace generated by Spike (the RISC-V ISA simulator)
+- A self-checking flow that compares every committed instruction against that reference
+- A waveform you can open in GTKWave and trace all the way from fetch to writeback
+
+#### The Two Questions That Motivated This Work
+
+Before building anything, two practical questions had to be answered:
+
+- **How do you feed all of CVA6's submodules to Verilator?** CVA6 spans dozens of SystemVerilog files with deep package and interface dependencies. Listing them by hand is not feasible and breaks whenever the source tree changes.
+- **Does the Verilator testbench have to be written in C++?** Verilator compiles RTL into a C++ model, so the driver must be C++ or SystemC. A pure HDL testbench is not an option here.
+
+Both answers shape the tooling choices in this guide: **Bender** solves the first problem by generating a complete, dependency-ordered file list; a custom **C++ testbench** solves the second.
+
+>**Note:** This entire workflow targets the `cv32a6_imac_sv32` configuration of CVA6. Command flags, port names, and linker settings in this guide are specific to that target. Adapting to a 64-bit configuration requires changes to the Bender target flag, the ISA string passed to Spike, and the linker boot address.
+
+---
+
 ### 3.1 Dependency Generation via Bender
+
+---
+
 ### 3.2 CVA6 AXI Wrapper (`cva6_axi_wrapper.sv`)
+
+---
+
 ### 3.3 Spike as Instruction-Level Reference (`--log-commits`)
-### 3.4 Firmware and Linker Script (`main.S`, `link.ld`)
-### 3.5 Self-Checking C++ Testbench (`tb_cva6.cpp`)
+
+---
+
+### 3.4 Firmware Suite & Linker Script
+
+---
+
+### 3.5 Self-Checking C++ Testbench
+
+---
+
 ### 3.6 Makefile Automation
+
+---
+
 ### 3.7 Issue Stage Deep Dive (Scoreboard, RAW Hazards, Dual-Issue, Waveform Tracing)
