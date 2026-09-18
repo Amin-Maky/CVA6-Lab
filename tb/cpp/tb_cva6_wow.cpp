@@ -18,9 +18,6 @@ struct AXI_Req {
     uint8_t  len;
 };
 
-// ==========================================
-// Structure and functions for processing the Spike log
-// ==========================================
 struct SpikeLogEntry {
     uint64_t pc;       // Updated to 64-bit
     uint32_t rd;       // Destination register (0 to 31)
@@ -41,7 +38,7 @@ std::vector<SpikeLogEntry> load_spike_log(const std::string& filename) {
     
     // Detect commit lines: they contain a privilege level (e.g. 3) before the PC
     // Example: core   0: 3 0x00001004 (0x02028593) x11 0x00001020
-    std::regex commit_regex(R"(core\s+\d+:\s+\d+\s+(0x[0-9a-fA-F]+)\s+\(0x[0-9a-fA-F]+\)(.*))");
+    std::regex commit_regex(R"(core\s+\d+:\s+\d+\s+(0x[0-9a-fA-F]+)\s+\((0x[0-9a-fA-F]+)\)(.*))");
     
     // Check whether the rest of the line contains a register write (xN)
     std::regex reg_write_regex(R"(x(\d+)\s+(0x[0-9a-fA-F]+))");
@@ -74,7 +71,6 @@ std::vector<SpikeLogEntry> load_spike_log(const std::string& filename) {
     std::cout << "Loaded " << log_entries.size() << " commit lines from Spike log.\n";
     return log_entries;
 }
-// ==========================================
 
 uint64_t read_ram(const std::vector<uint8_t>& ram, uint64_t addr) {
     // اجبار به هم‌ترازی 8 بایتی (صفر کردن 3 بیت آخر)
@@ -152,7 +148,7 @@ int main(int argc, char **argv) {
     
     last_commit_time = main_time; // Initialize the stall timer before entering the loop
 
-    while (!Verilated::gotFinish() && main_time < 10000000 && !sim_failed) {
+    while (!Verilated::gotFinish() && main_time < 50000000 && !sim_failed) {
         
         bool ar_fire = top->axi_ar_valid_o && top->axi_ar_ready_i;
         uint64_t captured_ar_addr = top->axi_ar_addr_o;
@@ -183,14 +179,25 @@ int main(int argc, char **argv) {
             for (int i = 0; i < 2; i++) { 
                 if ((top->commit_ack_o >> i) & 1) { 
                     
-                    // Combine the two 32-bit halves to build the 64-bit PC and WDATA
+                    uint64_t pc = 0;
+                    uint64_t wdata = 0;
+
+#ifdef RV32
+                    // In RV32, commit signals are 64-bit total (2 ports * 32-bit).
+                    // Verilator handles them as a single uint64_t scalar.
+                    pc = (top->commit_pc_o >> (i * 32)) & 0xFFFFFFFFULL;
+                    wdata = (top->commit_wdata_o >> (i * 32)) & 0xFFFFFFFFULL;
+#else
+                    // In RV64, commit signals are 128-bit total (2 ports * 64-bit).
+                    // Verilator splits them into arrays of 32-bit words (WData[4]).
                     uint64_t pc_low  = top->commit_pc_o[i * 2];
                     uint64_t pc_high = top->commit_pc_o[i * 2 + 1];
-                    uint64_t pc = (pc_high << 32) | pc_low;
+                    pc = (pc_high << 32) | pc_low;
 
                     uint64_t wdata_low  = top->commit_wdata_o[i * 2];
                     uint64_t wdata_high = top->commit_wdata_o[i * 2 + 1];
-                    uint64_t wdata = (wdata_high << 32) | wdata_low;
+                    wdata = (wdata_high << 32) | wdata_low;
+#endif
 
                     // Extract the destination register (RD) number from the 5-bit fields
                     uint32_t rd = (top->commit_rd_o >> (i * 5)) & 0x1F;       
@@ -299,11 +306,37 @@ int main(int argc, char **argv) {
                 printf("\n❌ [STALL ERROR] RTL never started committing instructions! (Initial sync timeout)\n");
             } else {
                 printf("\n❌ [STALL ERROR] RTL stopped committing instructions for %llu time units!\n", (unsigned long long)MAX_STALL_TIME);
+                printf("   The pipeline is likely stalled, trapped, or waiting on memory.\n");
+                if (spike_idx > 0) {
+                    printf("   Last successful PC: 0x%016llx\n", (unsigned long long)spike_log[spike_idx-1].pc);
+                }
             }
             sim_failed = true;
-            break;
+            break; // Exit the loop on stall
         }
-    } // End of while loop
+    }
+
+    if (sim_failed) {
+        std::cout << "\n============================================\n";
+        std::cout << "❌ SIMULATION FAILED!\n";
+        std::cout << "============================================\n";
+    }
+    else if (!is_synced && !spike_log.empty()) {
+        std::cout << "\n============================================\n";
+        std::cout << "⚠️ SIMULATION FAILED! (Never synced with Spike log)\n";
+        std::cout << "============================================\n";
+    }
+    else if (spike_idx < spike_log.size()) {
+        std::cout << "\n============================================\n";
+        std::cout << "⏳ SIMULATION TIMEOUT! (Verified " << spike_idx << "/" << spike_log.size() << " instructions)\n";
+        std::cout << "============================================\n";
+    }
+    else {
+        std::cout << "\n============================================\n";
+        std::cout << "✅ SUCCESS! All " << spike_log.size() << " instructions from Spike log matched.\n";
+        std::cout << "Test completed at time: " << std::dec << main_time << " ps\n";
+        std::cout << "============================================\n";
+    }
 
     delete top;
     return sim_failed ? 1 : 0;

@@ -1103,19 +1103,718 @@ Both answers shape the tooling choices in this guide: **Bender** solves the firs
 
 ---
 
+Here is section 3.1, written in the tone and structure established by 3.0, with a link to the f-maker README and the full Bender explanation from `README-Manual-sim.md` §2:
+
+---
+
 ### 3.1 Dependency Generation via Bender
+
+CVA6 is not a single file — it is dozens of SystemVerilog sources spread across submodules: packages, interfaces, common cells, cache subsystems, and more. Each of those files has a **strict compilation-order requirement**: a package must appear before any module that imports it. Maintaining that list by hand is error-prone and silently breaks whenever the source tree changes.
+
+**Bender** solves this in one command. It reads the repository's `Bender.yml` manifest files, resolves the dependency graph, and emits a flat, dependency-ordered file list formatted for Verilator:
+
+```bash
+bender script verilator -t cv32a6_imac_sv32 > cv32a6_imac_sv32_verilator.f
+```
+
+The resulting `.f` file contains every source path and `+incdir+` include directive Verilator needs — in the correct order, with zero manual bookkeeping.
+
+#### Flag breakdown
+
+| Flag / part | What it does |
+|---|---|
+| `bender script verilator` | Emit a file list in Verilator format (paths + include dirs) |
+| `-t cv32a6_imac_sv32` | Select the 32-bit IMAC + Sv32 MMU configuration; controls which config packages and source files are included |
+| `> cv32a6_imac_sv32_verilator.f` | Redirect output to a file; the `.f` extension is a standard EDA convention, the name is arbitrary |
+
+#### Available targets
+
+| Target | Configuration |
+|---|---|
+| `cv32a65x` | 32-bit embedded class |
+| `cv32a6_imac_sv32` | 32-bit, IMAC extensions, Sv32 MMU — **used throughout this guide** |
+| `cv64a6_imafdc_sv39` | 64-bit, IMAFDC extensions, Sv39 MMU |
+
+> **Important:** Switching targets is not a cosmetic change. It affects the file list, the ISA string you pass to GCC and Spike, and the linker boot address. Every step in this guide is fixed to `cv32a6_imac_sv32`; if you adapt to a 64-bit target, update all three.
+
+The `.f` file produced here is passed straight to Verilator later via the `-f` flag, giving the compiler the full design in one shot.
+
+#### Making the file list portable (f-maker)
+
+The raw Bender output embeds absolute paths rooted at the CVA6 developer tree — those paths break the moment you move the project or hand it to a colleague. A small Python utility, `f-maker.py`, rewrites every `/cva6/` path to the `${CVA6_ROOT}` environment variable and copies the RTL sources into the local project tree.
+
+Full instructions are in the dedicated README: [`scripts/f-maker/README.md`](../scripts/f-maker/README.md).
+
+> If you are ever unsure about a flag or a target name, `bender --help` and `bender script --help` document both well.
+
+---
+
+Here is section 3.2, grounded fully in the retrieved source and README data:
 
 ---
 
 ### 3.2 CVA6 AXI Wrapper (`cva6_axi_wrapper.sv`)
 
+#### Why the wrapper exists
+
+`cva6.sv` does not expose individual AXI signals. Its memory interface is two packed struct ports:
+
+```systemverilog
+output noc_req_t   noc_req_o,    // 374 bits — AW, W, AR payloads + valids + b/r ready
+input  noc_resp_t  noc_resp_i,   // 146 bits — readys, B and R payloads with valids
+```
+
+When Verilator compiles this, it flattens both into anonymous word arrays — no `aw_addr`, no `ar_valid`, just two opaque `uint32_t` blobs. To read `aw_addr` from the C++ testbench you would need to know its exact bit offset inside a 374-bit vector and mask it out by hand. That is fragile and breaks silently whenever the struct layout changes.
+
+The wrapper solves this in one move: it instantiates `cva6` internally, then cracks both structs open into individually-named, flat output ports. The testbench sees clean signals; the struct math is entirely inside the wrapper.
+
+A secondary benefit: `rvfi_probes_o` is 4196 bits (132 × 32-bit words) as a raw blob. The wrapper unpacks the commit-log fields —rvfi_probes_o` is 4196 bits (132 × 32-bit words) as a raw blob. The wrapper unpacks the commit-log fields — PC, destination register, wriop reads in §3.5.
+
+#### Discovering the real interface
+
+Before writing a single port declaration, the Verilated header tells you exactly what you are dealing with. Compile `cva6.sv` alone:
+
+```bash
+verilator --sv --lint-only cva6.sv -f cv32a6_imac_sv32_verilator.f
+```
+
+Then open `obj_dir/Vcva6.h` and find the `// PORTS` section. For `cv32a6_imac_sv32` you will see:
+
+```cpp
+VL_IN8(&clk_i,0,0);
+VL_IN8(&rst_ni,0,0);
+VL_IN(&boot_addr_i,31,0);
+VL_IN(&hart_id_i,31,0);
+VL_OUTW(&rvfi_probes_o,4195,0,132);   // 4196 bits, 132 words
+VL_OUTW(&noc_req_o,373,0,12);         // 374 bits, 12 words
+VL_INW(&noc_resp_i,145,0,5);          // 146 bits, 5 words
+```
+
+| Macro | Width | C++ type | Notes |
+|---|---|---|---|
+| `VL_IN8` / `VL_OUT8` | ≤ 8 bits | `uint8_t` | |
+| `VL_IN` / `VL_OUT` | ≤ 32 bits | `uint32_t` | |
+| `VL_INW` / `VL_OUTW` | > 64 bits | `uint32_t[]` | args: `(&name, msb, lsb, words)` |
+
+`noc_req_o` at 374 bits is ⌈374/32⌉ = 12 words. That is the number you need to replicate on the wrapper's flat output side so nothing is lost.
+
+#### Type-parameter design
+
+The wrapper mirrors `cva6.sv`'s own pattern: every type is derived from a single `CVA6Cfg` parameter rather than declared with hand-coded widths.
+
+```systemverilog
+parameter config_pkg::cva6_cfg_t CVA6Cfg =
+    build_config_pkg::build_config(cva6_config_pkg::cva6_cfg);
+```
+
+All AXI channel types, the RVFI probe types, and the `noc_req_t`/`noc_resp_t` bundles are then constructed from that same config:
+
+```systemverilog
+// AXI channel types — widths track CVA6Cfg automatically
+parameter type axi_ar_chan_t = ...;
+parameter type axi_aw_chan_t = ...;  // includes atop[5:0]; AR does not
+parameter type axi_w_chan_t  = ...;
+parameter type b_chan_t      = ...;
+parameter type r_chan_t      = ...;
+
+// Bundles
+parameter type noc_req_t  = struct packed { aw, aw_valid, w, w_valid,
+                                            b_ready, ar, ar_valid, r_ready };
+parameter type noc_resp_t = struct packed { aw_ready, ar_ready, w_ready,
+                                            b_valid, b, r_valid, r };
+```
+
+This matters because packed struct field unpacking is purely positional — the wrapper's `noc_req_t` must be **bit-for-bit identical** to `cva6.sv`'s own definition. Mismatching field order silently reroutes signals.
+
+> If you change `CVA6Cfg` (e.g. to a 64-bit target), every width in the wrapper adjusts automatically: `XLEN`, `VLEN`, `AxiDataWidth`, `NrCommitPorts`. You do not touch the port list.
+
+#### Port groups
+
+**Control inputs** — passed straight through; the C++ testbench drives these before releasing reset:
+
+| Port | Width | Notes |
+|---|---|---|
+| `clk_i`, `rst_ni` | 1 bit | |
+| `boot_addr_i` | `VLEN` | Drive `0x80000000` for `cv32a6_imac_sv32` |
+| `hart_id_i` | `XLEN` | Usually `0` for single-core |
+| `irq_i` | 2 bits | External IRQ lines |
+| `ipi_i`, `time_irq_i`, `debug_req_i` | 1 bit each | Tie to `0` for basic simulation |
+
+**Commit-log outputs** — the co-simulation interface, one entry per commit port:
+
+```systemverilog
+output logic [NrCommitPorts-1:0]            commit_ack_o,
+output logic [NrCommitPorts-1:0][VLEN-1:0]  commit_pc_o,
+output logic [NrCommitPorts-1:0][4:0]       commit_rd_o,
+output logic [NrCommitPorts-1:0][XLEN-1:0]  commit_wdata_o,
+```
+
+These are unpacked from `rvfi_probes` in a `generate` loop keyed on `NrCommitPorts`. Each cycle in the C++ testbench you read these and compare against Spike's commit log.
+
+**Flat AXI ports** — the memory interface the testbench (andr a memory model) connects to:
+
+| Channel | Key outpuy output signals | Key input signals |
+|---|---|---|
+| AW | `axi_aw_valid_o`, `addr`, `id`, `len`, `size`, `burst`, `atop` | `axi_aw_ready_i` |
+| W | `axi_w_valid_o`, `data`, `strb`, `last` | `axi_w_ready_i` |
+| B | `axi_b_ready_o` | `axi_b_valid_i`, `id`, `resp` |
+| AR | `axi_ar_valid_o`, `addr`, `id`, `len`, `size`, `burst` | `axi_ar_ready_i` |
+| R | `axi_r_ready_o` | `axi_r_valid_i`, `id`, `data`, `resp`, `last` |
+
+Note that AW carries `atop[5:0]` (atomic operations); AR does not — this matches the AXI4 spec.
+
+#### Internal logic: unpack and pack only
+
+The wrapper contains no state. Every signal is a continuous assignment in one of two directions:
+
+Core → AXI  :  noc_req_o fields  →  flat axi_*_o ports
+AXI  →th is a `generate`i fields
+
+
+The RVFI path is a `generate`-loop assignment, not procedural logic. The `cva6` instance at the bottom connects to the two internal bundle signals (`core_noc_req`, `core_noc_resp`) and the `rvfi_probes` wire; the CvXIF interface is left unconnected on the output and tied to `'0` on the input — co-processor extension is not exercised in this guide.
+
+```systemverilog
+cva6 #(.CVA6Cfg(CVA6Cfg)) i_cva6 (
+    .clk_i,
+    .rst_ni,
+    .noc_req_o   (core_noc_req),
+    .noc_resp_i  (core_noc_resp),
+    .rvfi_probes_o (rvfi_probes),
+    .cvxif_req_o  (/* unconnected */),
+    .cvxif_resp_i ('0),
+    ...
+);
+```
+
+The result is a testbench-facing module with no struct awareness required: read `dut->commit_pc_o[0]`, drive `dut->axi_r_valid_i`, and the wrapper handles all the field-offset arithmetic internally.
+
 ---
 
 ### 3.3 Spike as Instruction-Level Reference (`--log-commits`)
 
+#### What Spike is
+
+Waveforms tell you *what* the hardware did. They do not tell you whether what it did was *correct*. For that you need an independent, trusted execution model — something that runs the same binary and records the architectural result of every instruction, with no microarchitectural noise.
+
+That is Spike's role here. It is the official RISC-V ISA simulator (`riscv-isa-sim`): it executes `firmware.elf` instruction-by-instruction in software, with no pipeline, no caches, and no stalls. Pure architectural semantics, nothing else. That purity is exactly what makes it useful — if CVA6 and Spike disagree on the value written to a register after any instruction, CVA6 (or the testbench) is wrong.
+
+| Tool | Role |
+|---|---|
+| `riscv-none-elf-gcc` | Compiles source → `firmware.elf` |
+| Spike | Executes `firmware.elf` → golden commit log |
+| CVA6 (Verilator) | Executes `firmware.elf` → RTL commit log |
+| C++ testbench | Compares the two logs cycle by cycle |
+
+> **Prerequisites:** Spike installation and the optional `--enable-commitlog` rebuild are covered in [1-environment-setup.md](1-environment-setup.md). If `spike --log-commits` runs but produces a plain trace with no register data, that document explains the rebuild.
+
+#### Why `--log-commits`, not just `-l`
+
+The plain `-l` flag gives a trace of PC and disassembled instruction — one line per instruction, no register data. That is enough for manual inspection but not for automated co-simulation.
+
+The verification goal is tighter: for every committed instruction, does the **value written to the destination register** match between CVA6 and Spike? `--log-commits` extends the log format so each line also records the destination register index and the data written to it. That maps directly onto the wrapper's `commit_rd_o` and `commit_wdata_o` outputs from §3.2. Both sides emit `(PC, rd, wdata)` tuples — the C++ testbench in §3.5 reads them in lockstep and flags the first mismatch.
+
+Without `--log-commits` the co-simulation loop has nothing to compare against beyond the PC, which catches control-flow bugs but misses silent data corruption.
+
+#### The command
+
+```bash
+spike --isa=rv32imac -l --log-commits firmware.elf 2> spike_trace.log
+```
+
+| Part | Meaning |
+|---|---|
+| `--isa=rv32imac` | ISA string — must match the GCC `-march` flag and the CVA6 target config |
+| `-l` | Enable instruction tracing |
+| `--log-commits` | Extend each trace line with destination register and write-back data |
+| `firmware.elf` | The binary built by the firmware step |
+| `2> spike_trace.log` | Spike writes its trace to **stderr**, not stdout — the redirect must be `2>` |
+
+The `--isa` flag is the one most likely to cause a silent failure. If it does not match the ISA the firmware was compiled for, Spike may refuse to execute certain instructions or produce a different instruction count than CVA6. Keep GCC's `-march`, Spike's `--isa`, and the Bender target tag consistent.
+
+#### Architecture-dependent ISA string
+
+The `rv32imac` string above is correct for `cv32a6_imac_sv32`. For a 64-bit target the string changes:
+
+| CVA6 config | Bender target | GCC `-march` | Spike `--isa` |
+|---|---|---|---|
+| 32-bit | `cv32a6_imac_sv32` | `rv32imac` | `rv32imac` |
+| 64-bit | `cv64a6_imafdc_sv39` | `rv64imafdc` | `rv64imafdc` |
+
+This is not cosmetic — `rv64imafdc` adds the D extension and double-precision floating-point instructions. Running a 64-bit binary under `--isa=rv32imac` will produce traps or aborts.
+
+When you reach §3.6 and look inside the Makefile, you will see this handled via a `SPIKE_ISA` variable that switches automatically with `make ARCH=32|64`. The command in the Makefile's `_spike` target is exactly:
+
+```make
+$(SPIKE) --isa=$(SPIKE_ISA) -l --log-commits \
+    $(SPIKE_DIR)/firmware.elf 2> spike_trace.log
+```
+
+with `SPIKE_ISA := rv32imac` or `rv64imafdc` depending on `ARCH`. Nothing to manually edit; that is the point of the variable.
+
+#### What the log looks like
+
+A `--log-commits` line for a 32-bit target looks like:
+
+```log
+core   0: 0x80000000 (0x00000093) li      ra, 0
+core   0: 3 0x80000000 (0x00000093) x1  0x00000000
+```
+
+The second line is the commit record: core index, privilege level, PC, encoding, destination register (`x1` = `ra`), and written value (`0x00000000`). That tuple is what the testbench in §3.5 parses and compares against `commit_pc_o[0]`, `commit_rd_o[0]`, and `commit_wdata_o[0]` from the wrapper.
+
 ---
 
 ### 3.4 Firmware Suite & Linker Script
+
+CVA6 needs a binary to execute. It does not boot Linux — it resets to a fixed address, expects code there, and has no OS, no standard library, and no dynamic loader. Every program in this section is self-contained: `_start` runs, something observable happens, `tohost` receives a nonzero write, and the core spins. That is the complete execution model.
+
+This section covers the full firmware layer from source to binary. §3.4.1 maps the files in `benchmarks/` and explains which ones matter here. §3.4.2 covers the linker script and why the boot address in the script must match the one the testbench drives. §3.4.3 walks through the assembly entry point and what changes between a 32-bit and a 64-bit build. §3.4.4 and §3.4.5 cover the C runtime stub and how C programs plug into the same infrastructure.
+
+The `ARCH` variable — `32` or `64` — is the single knob that controls compiler flags, ISA strings, and calling conventions across every step in this section. There are no separate source files for each architecture; the same sources compile differently depending on what `ARCH` is set to.
+
+#### 3.4.1 Source File Map
+
+Files are grouped by the layer they belong to in the simulation stack. Post-synthesis files (`main-syn.S`, `link-syn.ld`) are excluded — those feed Vivado/XSim, not Verilator.
+
+---
+
+**Firmware Sources** — `benchmarks/src/`
+
+| File | Used by | Purpose |
+|---|---|---|
+| `main_32.S*` | `make run ARCH=32` | Standalone assembly playground, 32-bit |
+| `main_64.S*` | `make run ARCH=64` | Standalone assembly playground, 64-bit |
+| `complex_32.S` | `make run_complex ARCH=32` | Multi-operation benchmark, 32-bit |
+| `complex_64.S` | `make run_complex ARCH=64` | Multi-operation benchmark, 64-bit |
+| `bug_32.S*` | `make run_bug ARCH=32` | Intentional-bug target for waveform hunting, 32-bit |
+| `bug_64.S*` | `make run_bug ARCH=64` | Intentional-bug target for waveform hunting, 64-bit |
+| `boot.S` | `run_matmul`, `run_avg`, `run_c` | C runtime stub — sets up `sp`, zeroes `.bss`, calls `main` |
+| `matmul.c` | `make run_matmul` | Matrix multiply benchmark (C), pairs with `boot.S` |
+| `avg.c` | `make run_avg` | Array-average benchmark (C), pairs with `boot.S` |
+| `main.c*` | `make run_c` | C playground, pairs with `boot.S` |
+
+`*` : Enabling this target also generates a waveform file (.vcd).
+
+---
+
+**Linker** — `benchmarks/linker/`
+
+| File | Purpose |
+|---|---|
+| `link.ld` | Simulation linker script; places `.text` at `0x80000000` to match `boot_addr_i` |
+
+---
+
+**C++ Testbenches** — `tb/cpp/`
+
+| File | Used when | Purpose |
+|---|---|---|
+| `tb_cva6_ww.cpp` | `run`, `run_bug`, `run_c` | Drives CVA6, runs co-sim check, **emits `waveform.vcd`** |
+| `tb_cva6_wow.cpp` | `run_complex`, `run_matmul`, `run_avg` | Same co-sim logic, waveform generation disabled |
+
+---
+
+**RTL Wrapper & File Lists**
+
+| File | Location | Note |
+|---|---|---|
+| `cva6_axi_wrapper.sv` | `tb/wrappers/` | Verilator's top module — covered in §3.2 |
+| `cv32a6_imac_sv32_verilator.f` | `sim/filelists/` | Ordered RTL file list for 32-bit — covered in §3.1 |
+| `cv64a6_imafdc_sv39_verilator.f` | `sim/filelists/` | Ordered RTL file list for 64-bit — covered in §3.1 |
+
+---
+
+The `ARCH` variable is the only thing that changes which row of the firmware table is compiled. Everything else — linker, wrapper, file list — is decided by that same variable upstream in the Makefile.
+
+#### 3.4.2 Linker Script (`link.ld`)
+
+Every program in this simulation needs a linker script. The compiler has no way to know where the binary will live in memory — that is a board-level or simulation-level decision, not a language-level one. The linker script makes it explicit, and that same address is what the testbench drives on `boot_addr_i` when it releases reset. If the two disagree, the core fetches garbage.
+
+The script for simulation is `benchmarks/linker/link.ld`:
+
+```ld
+OUTPUT_ARCH("riscv")
+ENTRY(_start)
+
+SECTIONS
+{
+    /* Set the program start address exactly to the CVA6 boot address */
+    . = 0x80000000;
+
+    .text : {
+        *(.text)
+    }
+    .data : {
+        *(.data)
+    }
+    .bss : {
+        *(.bss)
+    }
+}
+```
+
+`OUTPUT_ARCH("riscv")` names the target architecture in the ELF header. `ENTRY(_start)` records the entry symbol — this is what Spike reads to determine where to begin fetching. Without it, Spike falls back to the lowest `.text` address, which happens to be the same thing here, but the explicit declaration is cleaner and required if the binary is ever inspected with `readelf -h`.
+
+The location counter `. = 0x80000000` is the core constraint. It sets the load address of everything that follows. `.text` lands therst instruction of `_start` is at exactlrst instruction of `_start` is at exactly `0x80000000`. `.data` follows immediately after `.text` ends — this is where `tohost` and `fromhost` live (covered in §3.4.3). `.bss` comes last; it is zeroed by the startup stub in `boot.S` before `main` is called (covered in §3.4.4).
+
+The address `0x80000000` is not arbitrary. In the C++ testbench, one of the first things done before releasing reset is:
+
+```cpp
+dut->boot_addr_i = 0x80000000;
+```
+
+CVA6 latches this on reset release and issues its first instruction fetch to that address. The linker script guarantees the binary is there. The testbench's flat DRAM model translates `0x80000000` to index `0` internally — so no `--change-addresses` flag or ELF patching is needed at load time.
+
+The Makefile passes this script via `-T`:
+
+```make
+riscv-none-elf-gcc -march=$(MARCH) -mabi=$(MABI) -mcmodel=medany \
+    -nostdlib -T $(BENCH_LINK)/link.ld -o firmware.elf ...
+```
+
+`-nostdlib` is important: there is no libc, no crt0, no heap management. The only startup code is what `_start` or `boot.S` provides explicitly. `-mcmodel=medany` ensures the compiler generates PC-relative code that works at any 2 GiB-aligned address — required because `0x80000000` is well outside the default `medlow` range.
+
+#### 3.4.3 `main_ARCH.S` — Canonical Assembly Entry Point
+
+The assembly playground is where simulation becomes interactive. Pick a handful of instructions, place them between two comment markers, run `make run`, and within seconds you have a waveform and a commit log to inspect. `main_32.S` and `main_64.S` are those playgrounds — one per architecture, for a reason that §3.4.1 glossed over and deserves a full explanation here.
+
+The `ARCH` variable controls compiler flags, ISA strings, and ABI conventions uniformly for C code — the compiler handles the rest. Assembly does not get that abstraction. A file containing `sd` is a hard assembler error under `rv32imac`; a file containing `lw` in a 64-bit context assembles fine but silently sign-extends the result in ways that can look like correct behavior until a carefully chosen value breaks it. Two separate files keeps those differences explicit and catches mistakes at assemble time rather than at trace-comparison time.
+
+The Makefile picks the right one automatically: `make run ARCH=32` feeds `main_32.S` to the compiler; `make run ARCH=64` feeds `main_64.S`. Edit the one that matches the target you are running. The structure of both files is identical — only one instruction in the exit sequence differs, and that difference is the whole point of this section.
+
+---
+
+##### File Skeleton
+
+Both files share this layout. The only difference between them is the single store instruction in the exit block (marked below).
+
+**`main_32.S`:**
+
+```asm
+.section .data
+.align 6
+.global tohost
+tohost: .dword 0
+
+.global fromhost
+fromhost: .dword 0
+
+.section .text
+.global _start
+_start:
+    # ---  Start Our Custom APK ---
+    # your program goes here
+    # --- Finish Our Custom APK ---
+
+    # --- Exit command for Spike ---
+    la t0, tohost
+    li t1, 1
+    sw t1, 0(t0)        # 32-bit store — correct for RV32
+
+loop:
+    j loop
+```
+
+**`main_64.S`:**
+
+```asm
+.section .data
+.align 6
+.global tohost
+tohost: .dword 0
+
+.global fromhost
+fromhost: .dword 0
+
+.section .text
+.global _start
+_start:
+    # ---  Start Our Custom APK ---
+    # your program goes here
+    # --- Finish Our Custom APK ---
+
+    # --- Exit command for Spike ---
+    la t0, tohost
+    li t1, 1
+    sd t1, 0(t0)        # 64-bit store — correct for RV64
+
+loop:
+    j loop
+```
+
+---
+
+##### What each piece does
+
+**`.data` block** — The two symbols `tohost` and `fromhost` are the HTIF (Host-Target Interface) mailboxes that Spike watches. `tohost` is the exit channel: writing a nonzero value to it tells Spike to terminate. `fromhost` is the reverse channel; it is unused here but Spike expects the symbol to exist in the ELF. Both are declared as `.dword` (8 bytes) in *both* architectures — the HTIF protocol is always 64-bit regardless of XLEN. `.align 6` enforces 64-byte alignment, and `.global` exports both symbols into the ELF symbol table so Spike can find them by name at load time.
+
+**`_start`** — The entry symbol that `ENTRY(_start)` in `link.ld` names. Because `.text` begins at `0x80000000` and `_start` is the first symbol in it, the first instruction between the markers is the first instruction CVA6 fetches after reset. There is no OS, no crt0, no ABI to honor. The register file is yours from the first cycle.
+
+**Program placement** — Your code goes between the two markers. There is no stack set up in this file; if you need scratch memory, add a label in `.data`. The only rule: control must eventually fall through to the exit sequence. Don't loop before reaching it, or Spike never sees the `tohost` write and never terminates.
+
+**Exit sequence** — After your code runs, `t0` gets the address of `tohost`, `t1` gets `1`, and the store writes that value to the mailbox. Spike reads it, sees a nonzero value, and exits. CVA6 meanwhile hits `loop: j loop` and parks — the testbench is already watching the commit log and will call `$finish` on its own schedule. `t0` and `t1` are clobbered here, so they are free to use inside your program too.
+
+---
+
+##### 3.4.3.1 ARCH = 32
+
+In RV32 every register is 32 bits wide. The natural load and store operations are word-sized:
+
+| Instruction | Operation | Behavior |
+|---|---|---|
+| `lw rd, off(rs)` | Load word | Loads 4 bytes into `rd` — fills the register exactly |
+| `sw rs2, off(rs1)` | Store word | Stores the low 4 bytes of `rs2` to memory |
+| `ld` / `sd` | Load/store doubleword | **Do not exist in RV32 — assembler error** |
+
+The exit store is `sw t1, 0(t0)`. It writes only 4 bytes to `tohost`, but that is fine: RISC-V is little-endian, so the low 4 bytes of `1` carry the value, and the upper 4 bytes of the 8-byte `tohost` slot are already zero from initialization. Spike reads the full 64-bit location and sees `0x0000000000000001`.
+
+Use `lw` and `sw` for all memory operations in your program. If you reach for `ld` or `sd`, the assembler will stop you immediately with an `unrecognized opcode` error — a clean, early failure compared to what happens in 64-bit (see below).
+
+---
+
+##### 3.4.3.2 ARCH = 64
+
+In RV64 registers are 64 bits wide and the full doubleword instructions are available:
+
+| Instruction | Operation | Behavior in RV64 |
+|---|---|---|
+| `ld rd, off(rs)` | Load doubleword | Loads 8 bytes into `rd` — native full-width load |
+| `sd rs2, off(rs1)` | Store doubleword | Stores all 8 bytes of `rs2` to memory |
+| `lw rd, off(rs)` | Load word | Loads 4 bytes, then **sign-extends** the result to fill all 64 bits of `rd` |
+| `sw rs2, off(rs1)` | Store word | Stores only the **low 32 bits** of `rs2`; upper half is silently discarded |
+
+The exit store is `sd t1, 0(t0)` — the idiomatic full-width write for a 64-bit `tohost`.
+
+The behavior of `lw` in RV64 deserves specific attention. It does not behave like a "narrower `ld`" — it **sign-extends**. Loading a 32-bit value where bit 31 is set will produce a 64-bit register value with the upper 32 bits filled with `0xFFFFFFFF`. Loading `0xFFFF_FFFF` with `lw` gives `0xFFFFFFFF_FFFFFFFF`; loading it with `ld` (from an 8-byte-aligned slot) gives whatever the full 8 bytes actually contain.
+
+This creates a class of bugs that are invisible until a value happens to have bit 31 set. A register that should hold `0x00000000_FFFFFFFF` silently becomes `0xFFFFFFFF_FFFFFFFF`, and the arithmetic that follows produces wrong results with no assembler warning, no linker error, and no obvious trace anomaly — until the co-sim log shows a `wdata` mismatch between CVA6 and Spike.
+
+The rule for `ARCH=64`:
+- Use `ld`/`sd` for full-width 64-bit data.
+- Use `lw`/`sw` deliberately, knowing that `lw` sign-extends and `sw` discards the upper half. They are not wrong — they are just specific.
+- If a value you loaded behaves as a large negative number in 64-bit arithmetic, check whether a `lw` brought in a value with bit 31 set.
+
+The assembler catches `sd` in a 32-bit build immediately. Nothing catches a sign-extension surprise in a 64-bit build except the trace.
+
+#### 3.4.4 `boot.S` — C Runtime Startup Stub
+
+When you assemble `main_32.S` or `main_64.S`, the very first instruction is yours. There is no invisible layer underneath — `_start` is the program, and the program does exactly what you write. C is different. The moment the compiler emits a function call it assumes a valid stack pointer. The moment you declare a global variable without an explicit initializer it assumes the memory is zeroed. Neither assumption is true after reset — `sp` holds whatever was in the register file, and `.bss` holds whatever was in the DRAM model. `boot.S` is the twelve lines that make those assumptions true before `main` runs.
+
+---
+
+##### Why assembly doesn't need it
+
+An assembly program has no assumptions to satisfy. There is no calling convention, no ABI, and no invisible contract with the code generator — because there is no code generator. You decide whether to use `sp`. If you never call a function, you never push a return address, and the value of `sp` never matters. If you want scratch memory you add a label in `.data` and load its address directly into whatever register you choose. The exit sequence writes to `tohost` with a single instruction and `loop: j loop` parks the core. None of that needs a stack.
+
+A C function is different by construction. The compiler emits a prologue that does `addi sp, sp, -N` before saving registers. If `sp` is garbage, that store goes to a garbage address, the memory model may or may not have anything mapped there, and the co-sim log will show a wdata mismatch on the very first instruction — or worse, it won't, because the address accidentally fell inside the DRAM window and the corruption is silent. `boot.S` exists to close that gap by establishing a known, valid stack region before the C world starts.
+
+---
+
+##### The file
+
+```asm
+.global _start
+.section .text
+
+_start:
+    # Initialize a simple stack with 4KB size
+    la sp, stack_top
+
+    # Jump to the main function in the C code
+    call main
+
+    # Infinite loop to prevent crashing after main returns
+end_loop:
+    j end_loop
+
+.section .bss
+.align 4
+stack_bottom:
+    .space 4096
+stack_top:
+```
+
+---
+
+##### What each piece does
+
+**`la sp, stack_top`** — This is the entire C runtime initialization in one instruction. `stack_top` is a label at the high end of a 4 KB `.bss` region. RISC-V uses a full-descending stack: `sp` starts at the top and moves down with each push. Loading `stack_top` into `sp` gives the compiler a region it can safely use. The 4 KB budget is adequate for every benchmark in this guide; if you write deeply recursive C or allocate large on-stack arrays, increase `.space` to match.
+
+**`call main`** — The standard ABI call to the C `main` function. `ra` (return address register) is set by `call` and honored by the C code's function epilogue. `main`'s return value ends up in `a0` per the calling convention — the simulation does not inspect it, but it is there if you want to act on it.
+
+**`end_loop: j end_loop`** — In a normal embedded system this would never execute; `main` would write to `tohost` and the core would park at the equivalent loop in the C source (covered in §3.4.5). This fallback exists because if `main` somehow returned — a logic bug, a missing `while(1)` — the program counter needs somewhere safe to go. Without it the core would fetch whatever bytes follow `call main` in memory, which is undefined.
+
+**`.bss` region** — `stack_bottom` is a label at the start of the allocation; `.space 4096` reserves 4096 bytes; `stack_top` is a label immediately past the end of those bytes. Because `stack_top` comes *after* `.space 4096` in the source, its address is `stack_bottom + 4096` — the high end of the region. This is the address `la sp, stack_top` loads. The region lands in `.bss`, which the linker places after `.data`. Because this is a simulation (the DRAM model is zero-initialized), `.bss` content is effectively zeroed without any explicit memset loop — the stack region and any zero-initialized globals start at zero without extra startup code.
+
+---
+
+##### The split between boot.S and main.c
+
+`boot.S` owns exactly one thing: getting to `main`. Everything before `main` (stack, zero-initialized memory) is boot.S's problem. Everything inside `main` (the algorithm, the HTIF exit write) is `main.c`'s problem. The linker combines them into a single ELF where `_start` at `0x80000000` is the first instruction CVA6 fetches, and `main` is wherever the linker places it immediately after. Neither file needs to know the other's address — `call main` resolves at link time, and `link.ld` guarantees both are in the same flat address space starting at `0x80000000`. How `main.c` signals exit to Spike is covered in §3.4.5.
+
+#### 3.4.5 `main.c` — C Programs
+
+`main.c` is the C playground. It is what `make run_c` compiles, simulates, and traces — and it is the file you edit when you want to run your own C code through the full simulation stack.
+
+---
+
+##### How it runs
+
+`make run_c ARCH=32` (or `64`) invokes the shared `_pipeline` sequence:
+
+1. **Compile** — GCC compiles `boot.S` and `main.c` together into a single `firmware.elf`, linked at `0x80000000` via `link.ld`. The command is the same as every other C target:
+
+    ```bash
+    riscv-none-elf-gcc -march=$(MARCH) -mabi=$(MABI) -mcmodel=medany \
+        -nostdlib -T benchmarks/linker/link.ld \
+        boot.S main.c -o firmware.elf
+    riscv-none-elf-objcopy -O binary firmware.elf firmware.bin
+    
+2. **Spike** — the ISA simulator runs the binary and emits a golden commit log:
+
+    ```bash
+    spike --isa=$(SPIKE_ISA) -l --log-commits firmware.elf 2> spike_trace.log
+    
+3. **Verilator** — the RTL is compiled and executed against `tb_cva6_ww.cpp`, the waveform-enabled testbench. `run_c` is the only C target that turns tracing on (`--trace --trace-structs`), so it also produces `waveform.vcd` alongside the co-sim results.
+
+The execution path at runtime is:
+
+```
+0x80000000 → _start (boot.S)
+               └─ sp ← stack_top
+               └─ call main
+                      └─ user code runs
+                      └─ tohost = 1        ← signals exit to simulator
+                      └─ while(1)          ← parks the core
+```
+
+The testbench drives `boot_addr_i = 0x80000000` before releasing reset. The linker script guarantees `_start` sits at that address. The two values must match — they are set in different places but mean the same thing.
+
+---
+
+##### The file
+
+```c
+void *memcpy(void *dest, const void *src, unsigned long n) {
+    char *d = (char *)dest;
+    const char *s = (const char *)src;
+    while (n--) {
+        *d++ = *s++;
+    }
+    return dest;
+}
+
+void *memset(void *s, int c, unsigned long n) {
+    unsigned char *p = (unsigned char *)s;
+    while (n--) {
+        *p++ = (unsigned char)c;
+    }
+    return s;
+}
+
+volatile unsigned long tohost = 0;
+volatile unsigned long fromhost = 0;
+
+int main() {
+    // ==========================================
+    // USER CUSTOM CODE GOES HERE
+    // ==========================================
+
+    // your program goes here
+
+    // ==========================================
+    // PROGRAM TERMINATION AND EXIT
+    // ==========================================
+
+    // Signal successful completion to the simulator (Spike/Verilator)
+    tohost = 1;
+
+    // Trap the processor in an infinite loop to prevent executing junk memory
+    while(1);
+
+    return 0;
+}
+```
+
+---
+
+##### `memcpy` and `memset`
+
+These two functions are not here for the user to call directly. They exist because GCC emits calls to them automatically, even when your code never mentions them.
+
+In a hosted environment `memcpy` and `memset` come from the C standard library. Here there is none — `-nostdlib` was passed to the linker, and neither `glibc` nor `newlib` is present. But the compiler does not stop generating calls to them just because the library is absent. The moment you write something as ordinary as:
+
+```c
+int A[5] = {0};      // compiler may emit memset
+struct Foo b = a;    // compiler may emit memcpy
+```
+
+the object file has an unresolved reference to `memset` or `memcpy`. Without a definition, the linker aborts:
+
+```
+undefined reference to `memset'
+undefined reference to `memcpy'
+```
+
+Providing the two functions in `main.c` closes that gap. The implementations are byte-by-byte loops — no SIMD, no alignment tricks — which is perfectly fine for a simulation running a handful of test operations. If you remove them and your code triggers a generated call, the linker will tell you immediately.
+
+---
+
+##### `tohost` and `fromhost`
+
+These two variables are the HTIF (Host-Target Interface) mailboxes. Their addresses are not just data — both Spike and the Verilator testbench monitor the physical memory locations these variables occupy and poll them every cycle.
+
+`tohost` is the exit channel. When the simulation writes a nonzero value to it, the simulator reads the write and acts on it:
+
+| Value written to `tohost` | Meaning |
+|---|---|
+| `1` | Program finished — pass |
+| Any other nonzero value | Exit with that value as an error code — fail |
+
+`fromhost` is the reverse channel. Spike can write to it to signal the program; it is unused in this guide but Spike expects the symbol to exist in the ELF symbol table. If it is absent, Spike may warn or refuse to run. Declaring it here keeps the binary well-formed.
+
+Both are declared `volatile` because the compiler must not optimize away the writes. Without `volatile`, the compiler is permitted to decide that writing to a variable nobody reads is dead code and discard the assignment. The simulator would never see the exit signal.
+
+---
+
+##### `tohost = 1` and `while(1)`
+
+After your code runs, two things happen in sequence and both matter.
+
+`tohost = 1` writes the exit signal to the HTIF mailbox. The simulator (Spike or the Verilator testbench) is polling that address. When it sees a nonzero value it begins shutdown: Spike terminates, and the C++ testbench calls `$finish`. From the simulator's perspective, the program is done.
+
+`while(1)` parks the core. The simulator does not stop the clock instantly — it takes a few cycles to process the `tohost` write and invoke the finish path. During those cycles the processor keeps fetching instructions. Without the loop it would walk past the end of `.text` and into whatever bytes follow in memory: uninitialized DRAM, a zero region, or random data depending on the DRAM model. Any of those can produce spurious commits that show up in the co-sim log as mismatches or, worse, crash the simulation in the last few cycles after a clean run. `while(1)` gives the core a safe, deterministic place to spin while the simulator wraps up.
+
+---
+
+##### Writing your own program
+
+Everything between the two comment markers in `main` is yours:
+
+```c
+int main() {
+    // ==========================================
+    // USER CUSTOM CODE GOES HERE
+    // ==========================================
+
+    // your code here
+
+    // ==========================================
+    // PROGRAM TERMINATION AND EXIT
+    // ==========================================
+    tohost = 1;
+    while(1);
+}
+```
+`boot.S` has already set up a valid stack pointer before `main` is called, and `.bss` is zero-initialized by the DRAM model, so global and static variables initialized to zero work without any additional startup code. `memcpy` and `memset` are available for the compiler to use. The only constraint is that control must reach `tohost = 1` — if your code loops forever before getting there, Spike never receives the exit signal and the simulation runs until the testbench's cycle limit trips.
+
+Once you have edited `main.c`, the full run is one command:
+
+```bash
+make run_c ARCH=32   # or ARCH=64
+```
+
+That recompiles the firmware, re-runs Spike to regenerate the golden trace, recompiles the Verilator model if needed, and executes the simulation. The output includes the co-sim result (pass or first mismatch) and, because `run_c` uses the waveform testbench, a `waveform.vcd` you can open in GTKWave to inspect the execution cycle by cycle.
 
 ---
 

@@ -13,11 +13,13 @@ ifeq ($(ARCH),32)
   MABI         = ilp32
   FILE_LIST    = cv32a6_imac_sv32_verilator.f
   SPIKE_ISA    = rv32imac
+  VERILATOR_CFLAGS = -CFLAGS "-DRV32"
 else
   MARCH        = rv64imafdc
   MABI         = lp64d
   FILE_LIST    = cv64a6_imafdc_sv39_verilator.f
   SPIKE_ISA    = rv64imafdc
+  VERILATOR_CFLAGS = 
 endif
 
 # --- 1. Paths ----------------------------------------------------------------
@@ -83,11 +85,11 @@ run_complex:
 	    TB_CPP=$(TB_CPP_DIR)/tb_cva6_wow.cpp \
 	    TRACE_FLAGS=""
 
-# Bug hunting: Bug_32.S or Bug_64.S, waveform ON
+# Bug hunting: bug_32.S or bug_64.S, waveform ON
 run_bug:
 	@echo "=== Bug Hunting ($(ARCH)-bit, waveform) ==="
 	$(MAKE) _pipeline \
-	    PROG_SRC=$(BENCH_SRC)/Bug_$(ARCH).S \
+	    PROG_SRC=$(BENCH_SRC)/bug_$(ARCH).S \
 	    TB_CPP=$(TB_CPP_DIR)/tb_cva6_ww.cpp \
 	    TRACE_FLAGS="--trace --trace-structs"
 
@@ -139,6 +141,7 @@ _prepare: _spike
 _compile: _prepare
 	@echo "--- Compiling Verilator model ---"
 	$(VERILATOR) $(VERILATOR_FLAGS) \
+	    $(VERILATOR_CFLAGS) \
 	    -f $(FILELIST_DIR)/$(FILE_LIST) \
 	    $(WRAPPER_SV) \
 	    --top-module $(TOP_MODULE) \
@@ -172,7 +175,7 @@ post-syn-sim-32:
 	@echo "1. Compiling firmware for 32-bit post-synthesis..."
 	@echo "========================================================="
 	riscv-none-elf-gcc -march=rv32imac -mabi=ilp32 -nostdlib \
-		-T $(BENCH_LINK)/link-syn.ld $(BENCH_SRC)/main-syn.S -o firmware_syn.elf
+		-T $(BENCH_LINK)/link.ld $(BENCH_SRC)/main-syn.S -o firmware_syn.elf
 	
 	@echo "========================================================="
 	@echo "2. Generating Hex File (firmware_syn.hex)..."
@@ -192,7 +195,7 @@ post-syn-sim-64:
 	@echo "1. Compiling firmware for 64-bit post-synthesis..."
 	@echo "========================================================="
 	riscv-none-elf-gcc -march=rv64imafdc -mabi=lp64d -nostdlib \
-		-T $(BENCH_LINK)/link-syn.ld $(BENCH_SRC)/main-syn.S -o firmware_syn.elf
+		-T $(BENCH_LINK)/link.ld $(BENCH_SRC)/main-syn.S -o firmware_syn.elf
 	
 	@echo "========================================================="
 	@echo "2. Generating Hex File (firmware_syn.hex)..."

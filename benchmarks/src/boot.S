@@ -2,13 +2,13 @@
 .section .text
 
 _start:
-    # تنظیم یک استک ساده با حجم ۴ کیلوبایت
+    # Initialize a simple stack with 4KB size
     la sp, stack_top
     
-    # پرش به تابع main در کد C
+    # Jump to the main function in the C code
     call main
 
-    # حلقه بی‌نهایت برای جلوگیری از کرش بعد از اتمام main
+    # Infinite loop to prevent crashing after main returns
 end_loop:
     j end_loop
 
@@ -17,3 +17,4 @@ end_loop:
 stack_bottom:
     .space 4096
 stack_top:
+

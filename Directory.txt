@@ -1,6 +1,6 @@
 CVA6-lab/                       # Main repository root
   ├── benchmarks/               # Software only (formerly firmware)
-  │   ├── src/                  # Source files (main.c, main_mul.S, boot.S, Bug_main.S, main.S, main_Complex.S, main_div.c, main_Simple.S, main-syn.S)
+  │   ├── src/                  # Source files (main.c, matmul.c, boot.S, bug_32.S, bug_64.S, main_32.S, main_64.S, complex_32.S, complex_64.S, avg.c, main-syn.S)
   │   ├── linker/               # Linker scripts (link.ld, link-syn.ld)
   │   └── spike-checking/       # Spike simulation logs
   ├── rtl/                      # Processor RTL only (no testbenches)

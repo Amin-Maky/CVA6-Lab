@@ -42,7 +42,7 @@ std::vector<SpikeLogEntry> load_spike_log(const std::string& filename) {
     
     // Detect commit lines: they contain a privilege level (e.g. 3) before the PC
     // Example: core   0: 3 0x00001004 (0x02028593) x11 0x00001020
-    std::regex commit_regex(R"(core\s+\d+:\s+\d+\s+(0x[0-9a-fA-F]+)\s+\(0x[0-9a-fA-F]+\)(.*))");
+    std::regex commit_regex(R"(core\s+\d+:\s+\d+\s+(0x[0-9a-fA-F]+)\s+\((0x[0-9a-fA-F]+)\)(.*))");
     
     // Check whether the rest of the line contains a register write (xN)
     std::regex reg_write_regex(R"(x(\d+)\s+(0x[0-9a-fA-F]+))");
@@ -189,14 +189,25 @@ int main(int argc, char **argv) {
             for (int i = 0; i < 2; i++) { 
                 if ((top->commit_ack_o >> i) & 1) { 
                     
-                    // Combine the two 32-bit halves to build the 64-bit PC and WDATA
+                    uint64_t pc = 0;
+                    uint64_t wdata = 0;
+
+#ifdef RV32
+                    // In RV32, commit signals are 64-bit total (2 ports * 32-bit).
+                    // Verilator handles them as a single uint64_t scalar.
+                    pc = (top->commit_pc_o >> (i * 32)) & 0xFFFFFFFFULL;
+                    wdata = (top->commit_wdata_o >> (i * 32)) & 0xFFFFFFFFULL;
+#else
+                    // In RV64, commit signals are 128-bit total (2 ports * 64-bit).
+                    // Verilator splits them into arrays of 32-bit words (WData[4]).
                     uint64_t pc_low  = top->commit_pc_o[i * 2];
                     uint64_t pc_high = top->commit_pc_o[i * 2 + 1];
-                    uint64_t pc = (pc_high << 32) | pc_low;
+                    pc = (pc_high << 32) | pc_low;
 
                     uint64_t wdata_low  = top->commit_wdata_o[i * 2];
                     uint64_t wdata_high = top->commit_wdata_o[i * 2 + 1];
-                    uint64_t wdata = (wdata_high << 32) | wdata_low;
+                    wdata = (wdata_high << 32) | wdata_low;
+#endif
 
                     // Extract the destination register (RD) number from the 5-bit fields
                     uint32_t rd = (top->commit_rd_o >> (i * 5)) & 0x1F;       
