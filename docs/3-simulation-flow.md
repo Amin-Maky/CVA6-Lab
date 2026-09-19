@@ -1820,10 +1820,110 @@ That recompiles the firmware, re-runs Spike to regenerate the golden trace, reco
 
 ### 3.5 Self-Checking C++ Testbench
 
+
+#### 3.5.1 Testbench Variants: Waveform vs. Regression Mode
+
+The project ships two C++ testbench files that share identical simulation logic. The only functional differences are waveform tracing and the simulation time limit.
+
+| Property | `tb_cva6_ww.cpp` | `tb_cva6_wow.cpp` |
+|---|---|---|
+| VCD tracing | Yes (`VerilatedVcdC`) | No |
+| Sim time limit | 5 000 000 ns (5M) | 50 000 000 ns (50M) |
+| Makefile targets | `run`, `run_bug`, `run_c` | `run_complex`, `run_matmul`, `run_avg` |
+| Verilator flags | `--trace --trace-structs` | *(none)* |
+
+**Why `--trace-structs` is required for the waveform build.**
+CVA6's RTL makes heavy use of packed structs. Without `--trace-structs`, Verilator's optimizer collapses those signals and they never appear in the VCD. The flag forces Verilator to preserve and expose each struct field as a named signal. This is a compile-time decision: the flag must be present when Verilator generates the C++ model, not just when the testbench is run.
+
+**Waveform-specific code in `tb_cva6_ww.cpp`.**
+Four additions relative to the no-waveform variant:
+
+```cpp
+// 1. Header
+#include "verilated_vcd_c.h"
+
+// 2. Setup, immediately after `top = new Vcva6_axi_wrapper`
+Verilated::traceEverOn(true);
+VerilatedVcdC* tfp = new VerilatedVcdC;
+top->trace(tfp, 99);      // 99 = hierarchy depth
+tfp->open("waveform.vcd");
+
+// 3. Dump on every clock edge (reset loop and main sim loop)
+tfp->dump(main_time++);   // replaces plain `main_time++`
+
+// 4. Cleanup
+tfp->close();
+```
+
+The 10× shorter time limit in the waveform build is intentional: a 50M-ns VCD trace for a complex benchmark would be gigabytes. Waveform targets (`run`, `run_bug`) are used for debugging specific failures; regression targets (`run_complex`, `run_matmul`, `run_avg`) trade observability for speed and run to completion without trace overhead.
+
+#### 3.5.2 Parsing the Spike Log
+
+Spike writes its commit log to **stderr**, not stdout. The Makefile captures it with a simple redirect:
+
+```makefile
+$(SPIKE_DIR)/spike ... firmware.elf 2> spike_trace.log
+```
+
+This file is what `load_spike_log()` (called at the top of `main()`) reads back into a vector before simulation starts.
+
+##### Data structure
+
+Each parsed entry maps to one committed instruction:
+
+```cpp
+struct SpikeLogEntry {
+    uint64_t    pc;        // commit PC
+    uint32_t    rd;        // destination register (0–31)
+    uint64_t    wdata;     // value written to rd
+    bool        has_write; // false for stores, branches, x0 writes
+    std::string full_line; // raw log line, kept for error messages
+};
+```
+
+`has_write` is set to `false` both when the instruction produces no register result (stores, branches) and when the destination is `x0`, since x0 never actually changes.
+
+##### Regex-based field extraction
+
+The parser uses two `std::regex` patterns applied sequentially to each line:
+
+```cpp
+// Match a Spike commit line and capture PC + trailing fields
+std::regex commit_regex(
+    R"(core\s+\d+:\s+\d+\s+(0x[0-9a-fA-F]+)\s+\((0x[0-9a-fA-F]+)\)(.*))");
+
+// Within the trailing fields, find an integer register write
+std::regex reg_write_regex(R"(x(\d+)\s+(0x[0-9a-fA-F]+))");
+```
+
+A typical Spike commit line looks like:
+
+core   0: 3 0x00001004 (0x02028593) x11 0x00001020
+
+
+The first regex captures the PC (group 1), the encoded instruction (group 2, used for context only), and everything after it (group 3). The second regex then searches group 3 for a register-write pattern. If found, `rd` and `wdata` are extracted with `std::stoul`/`std::stoull` using base 16; if no register write appears, `has_write` is left `false`.
+
+##### Failure handling
+
+If the log file cannot be opened, `load_spike_log()` prints a warning and returns an **empty vector**. The check loop in `main()` guards on `!spike_log.empty()`, so a missing log silently disables co-simulation rather than crashing — useful when running a quick smoke test without a reference trace.
+
+After the full file is consumed, the function prints:
+
+Loaded N commit lines from Spike log.
+
+
+giving an immediate sanity check that the expected number of instructions was parsed before RTL simulation begins.
+
+#### 3.5.3 Synchronization with Spike’s Bootrom
+
+#### 3.5.4 RAM Model and AXI Handshake
+
+#### 3.5.5 HTIF Termination: `tohost` Detection
+
+#### 3.5.6 The Online Checker Loop
+
+#### 3.5.7 Block Diagram
+
 ---
 
 ### 3.6 Makefile Automation
-
----
-
-### 3.7 Issue Stage Deep Dive (Scoreboard, RAW Hazards, Dual-Issue, Waveform Tracing)

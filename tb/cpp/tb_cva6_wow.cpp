@@ -9,6 +9,13 @@
 #include <sstream>
 #include <regex>
 
+// For better visual analysis of errors B)
+#define ANSI_COLOR_RED     "\x1b[1;31m"
+#define ANSI_COLOR_GREEN   "\x1b[1;32m"
+#define ANSI_COLOR_YELLOW  "\x1b[1;33m"
+#define ANSI_COLOR_BLUE    "\x1b[1;34m"
+#define ANSI_COLOR_RESET   "\x1b[0m"
+
 #define RAM_SIZE (1024 * 1024 * 16)
 #define BASE_ADDR 0x80000000ULL
 
@@ -17,6 +24,11 @@ struct AXI_Req {
     uint32_t id;
     uint8_t  len;
 };
+
+
+// ==========================================
+// Structure and functions for processing the Spike log
+// ==========================================
 
 struct SpikeLogEntry {
     uint64_t pc;       // Updated to 64-bit
@@ -73,7 +85,7 @@ std::vector<SpikeLogEntry> load_spike_log(const std::string& filename) {
 }
 
 uint64_t read_ram(const std::vector<uint8_t>& ram, uint64_t addr) {
-    // اجبار به هم‌ترازی 8 بایتی (صفر کردن 3 بیت آخر)
+    // Enforce 8-byte alignment (clear the lower 3 bits)
     uint64_t aligned_addr = addr & ~0x7ULL; 
     
     if (aligned_addr >= BASE_ADDR && (aligned_addr - BASE_ADDR) <= RAM_SIZE - 8) {
@@ -85,7 +97,7 @@ uint64_t read_ram(const std::vector<uint8_t>& ram, uint64_t addr) {
 }
 
 void write_ram(std::vector<uint8_t>& ram, uint64_t addr, uint64_t data, uint8_t strb) {
-    // اجبار به هم‌ترازی 8 بایتی
+    // Enforce 8-byte alignment
     uint64_t aligned_addr = addr & ~0x7ULL; 
     
     if (aligned_addr >= BASE_ADDR && (aligned_addr - BASE_ADDR) <= RAM_SIZE - 8) {
@@ -111,6 +123,11 @@ int main(int argc, char **argv) {
         std::cerr << "\nCRITICAL ERROR: Failed to open 'firmware.bin'!\n";
         return 1;
     }
+
+
+
+
+
 
     // Load Spike log file
     std::vector<SpikeLogEntry> spike_log = load_spike_log("spike_trace.log"); 
@@ -211,7 +228,7 @@ int main(int argc, char **argv) {
                             is_synced = true;
                             printf("\n[SYNC] Synced RTL and Spike at PC=0x%016llx\n", (unsigned long long)pc);
                         } else {
-                            printf("\n❌ [ERROR] Could not find RTL starting PC (0x%016llx) in Spike log!\n", (unsigned long long)pc);
+                            printf("\n" ANSI_COLOR_RED "[ERROR] Could not find RTL starting PC (0x%016llx) in Spike log!\n", (unsigned long long)pc);
                             sim_failed = true;
                             break;
                         }
@@ -223,7 +240,7 @@ int main(int argc, char **argv) {
                         
                         // a) Control-flow check (do the PCs match?)
                         if (pc != expected.pc) {
-                            printf("\n❌ [DIVERGENCE ERROR: PC MISMATCH] at time %lu ps\n", main_time);
+                            printf("\n" ANSI_COLOR_RED "[DIVERGENCE ERROR: PC MISMATCH] at time %lu ps\n", main_time);
                             printf("   RTL Executed : PC=0x%016llx\n", (unsigned long long)pc);
                             printf("   Spike Expects: PC=0x%016llx -> %s\n", (unsigned long long)expected.pc, expected.full_line.c_str());
                             sim_failed = true;
@@ -233,7 +250,7 @@ int main(int argc, char **argv) {
                         // b) Datapath check (written register value)
                         if (rd != 0 && expected.has_write) {
                             if (rd != expected.rd) {
-                                printf("\n❌ [DIVERGENCE ERROR: DEST REG MISMATCH] at time %lu ps\n", main_time);
+                                printf("\n" ANSI_COLOR_RED "[DIVERGENCE ERROR: DEST REG MISMATCH] at time %lu ps\n", main_time);
                                 printf("   PC=0x%016llx\n", (unsigned long long)pc);
                                 printf("   RTL wrote to   : x%d\n", rd);
                                 printf("   Spike wrote to : x%d\n", expected.rd);
@@ -241,7 +258,7 @@ int main(int argc, char **argv) {
                                 break;
                             }
                             if (wdata != expected.wdata) {
-                                printf("\n❌ [DIVERGENCE ERROR: DATA MISMATCH] at time %lu ps\n", main_time);
+                                printf("\n" ANSI_COLOR_RED "[DIVERGENCE ERROR: DATA MISMATCH] at time %lu ps\n", main_time);
                                 printf("   PC=0x%016llx | Register: x%d\n", (unsigned long long)pc, rd);
                                 printf("   RTL Data   : 0x%016llx\n", (unsigned long long)wdata);
                                 printf("   Spike Data : 0x%016llx\n", (unsigned long long)expected.wdata);
@@ -251,7 +268,7 @@ int main(int argc, char **argv) {
                         }
                         
                         // Print success log
-                        printf("✅ [MATCH] PC=0x%016llx | Spike: %s\n", (unsigned long long)pc, expected.full_line.c_str());
+                        printf( ANSI_COLOR_GREEN "[MATCH] PC=0x%016llx | Spike: %s\n", (unsigned long long)pc, expected.full_line.c_str());
                         
                         spike_idx++;
                         last_commit_time = main_time; // Update the stall timer on a successful commit
@@ -259,7 +276,6 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        // ==========================================================
 
         if (ar_fire) { ar_queue.push({captured_ar_addr, captured_ar_id, captured_ar_len}); }
         if (aw_fire) { aw_queue.push({captured_aw_addr, captured_aw_id, captured_aw_len}); }
@@ -303,9 +319,9 @@ int main(int argc, char **argv) {
         // ==========================================================
         if (main_time - last_commit_time > MAX_STALL_TIME) {
             if (!is_synced) {
-                printf("\n❌ [STALL ERROR] RTL never started committing instructions! (Initial sync timeout)\n");
+                printf("\n" ANSI_COLOR_RED "[STALL ERROR]" ANSI_COLOR_RESET "RTL never started committing instructions! (Initial sync timeout)\n");
             } else {
-                printf("\n❌ [STALL ERROR] RTL stopped committing instructions for %llu time units!\n", (unsigned long long)MAX_STALL_TIME);
+                printf("\n" ANSI_COLOR_RED "[STALL ERROR]" ANSI_COLOR_RESET "RTL stopped committing instructions for %llu time units!\n", (unsigned long long)MAX_STALL_TIME);
                 printf("   The pipeline is likely stalled, trapped, or waiting on memory.\n");
                 if (spike_idx > 0) {
                     printf("   Last successful PC: 0x%016llx\n", (unsigned long long)spike_log[spike_idx-1].pc);
@@ -316,28 +332,24 @@ int main(int argc, char **argv) {
         }
     }
 
+    std::cout << ANSI_COLOR_RESET <<"\n============================================================\n";
     if (sim_failed) {
-        std::cout << "\n============================================\n";
-        std::cout << "❌ SIMULATION FAILED!\n";
-        std::cout << "============================================\n";
+        std::cout << ANSI_COLOR_RED << "          [FAILED] SIMULATION HALTED." << ANSI_COLOR_RESET << "\n";
     }
     else if (!is_synced && !spike_log.empty()) {
-        std::cout << "\n============================================\n";
-        std::cout << "⚠️ SIMULATION FAILED! (Never synced with Spike log)\n";
-        std::cout << "============================================\n";
+        std::cout << ANSI_COLOR_YELLOW << "          [WARNING] SIMULATION INCOMPLETE." << ANSI_COLOR_RESET << " (Never synced with Spike log)\n";
     }
     else if (spike_idx < spike_log.size()) {
-        std::cout << "\n============================================\n";
-        std::cout << "⏳ SIMULATION TIMEOUT! (Verified " << spike_idx << "/" << spike_log.size() << " instructions)\n";
-        std::cout << "============================================\n";
+        std::cout << ANSI_COLOR_YELLOW << "          [TIMEOUT] SIMULATION ENDED EARLY." << ANSI_COLOR_RESET << " (Verified " << spike_idx << "/" << spike_log.size() << " instructions)\n";
     }
     else {
-        std::cout << "\n============================================\n";
-        std::cout << "✅ SUCCESS! All " << spike_log.size() << " instructions from Spike log matched.\n";
-        std::cout << "Test completed at time: " << std::dec << main_time << " ps\n";
-        std::cout << "============================================\n";
+        std::cout << ANSI_COLOR_GREEN << "          [SUCCESS] SIMULATION COMPLETED." << ANSI_COLOR_RESET << "\n";
+        std::cout << "          All " << spike_log.size() << " instructions from Spike log matched perfectly.\n";
+        std::cout << "          Test duration: " << std::dec << main_time << " ps\n";
     }
+    std::cout << "============================================================\n";
 
+    
     delete top;
     return sim_failed ? 1 : 0;
 }
