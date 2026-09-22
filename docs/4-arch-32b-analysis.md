@@ -704,6 +704,7 @@ With this map in place, the following sub-steps can point at concrete transition
 
 ![Figure 3.2.1 — Scoreboard interface during the test run (GTKWave)](Wave-3.2.2.png)
 
+> **Note:** The default value of 4 on the write-back bus stems from the result MUX in `ex_stage.sv`. The code assigns `branch_result` as the default case (`flu_result_o = branch_result;`). In `branch_unit.sv`, this output is tied to the next PC calculation (`next_pc = pc_i + 4` for standard instructions). Consequently, when $PC = 0$ and no other functional units assert a valid signal, the bus naturally defaults to $0 + 4 = 4$.
 
 Block 0 is the warm-up. Seven `li` instructions load constants into `a0`–`a6`; nothing here is out-of-order and nothing touches memory yet. Its purpose in the trace is to give us a clean baseline: a place where the pipeline behaves in the simplest possible way, so we can calibrate our eye before the interesting Blocks 1 and 2.
 

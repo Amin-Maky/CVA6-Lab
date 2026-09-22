@@ -1,5 +1,7 @@
 # CVA6 Simulation Flow
 
+This document is the third part of a three-part series on the CVA6 core, covering the complete simulation flow from the first successful run through quantitative performance analysis. Part one shows why behavioral simulation fails on constrained hardware and how that limitation can be worked around using post-synthesis simulation in Vivado/XSIM — together with a custom AXI testbench and bare-metal firmware. Part two introduces the developer flow: the `cva6.py` script alongside Verilator and Spike, which enables running arbitrary C and assembly programs and reveals the actual program-termination mechanism — a write to `tohost` via HTIF, not UART. Part three goes one level deeper and demonstrates building the simulator independently from scratch: from generating the file list with Bender and writing a custom AXI wrapper, to implementing a self-checking C++ testbench that compares RTL output against the Spike log instruction by instruction. Part four is the practical payoff of that infrastructure: a quantitative comparison of four processor configurations (32/64-bit × single/dual-issue) across three real benchmarks, each placing a different kind of pressure on the pipeline.
+
 ---
 
 ## 1. Post-Synthesis Simulation (Vivado / XSIM)
@@ -792,8 +794,13 @@ CVA6 is an **out-of-order processor**, meaning its pipeline structure differs fr
    - `i_ariane_regfile`
 
 3. Click on `i_ariane_regfile` to see its signals in the **Signals panel** below
-![GTKWave Module Hierarchy](sim-waveform-1.jpg)  
-*Figure 1: Navigating the CVA6 module hierarchy to locate the register file in GTKWave*
+
+<div align="center">
+  <img src="sim-fig-1.jpg" alt="GTKWave Module Hierarchy" width="30%">
+  <p><i>Figure 1: Navigating the CVA6 module hierarchy to locate the register file in GTKWave</i></p>
+</div>
+
+
 ---
 
 #### Selecting Register File Signals
@@ -1075,6 +1082,14 @@ This closes the loop between **what the programmer wrote** and **what the silico
 
 ## 3. Manual Simulation from Scratch (Standalone Verilator)
 
+Most processor verification flows are handed to you as a black box: run this script, get a pass/fail. That works until something breaks — a tool version changes, a dependency disappears, or the RTL does something unexpected — and suddenly you are staring at a build system you do not understand, running a testbench whose internals you have never read.
+
+This chapter builds the entire flow by hand, from a bare CVA6 repository to a self-checking simulation that compares every instruction commit against a golden Spike trace. Nothing is assumed pre-existing except the RTL source and the standard toolchain. By the end you will have written the AXI wrapper that adapts CVA6's interface to the testbench, authored the linker script and firmware that the processor actually runs, understood how Spike generates commit logs and why the format is structured the way it is, and built a C++ testbench that detects any divergence between the RTL and the reference model at cycle resolution.
+
+The flow has six concrete layers. 3.1 uses Bender to resolve RTL dependencies and produce the flat file list that Verilator needs. 3.2 constructs `cva6_axi_wrapper.sv`, the thin SystemVerilog shim that maps CVA6's parameterized AXI port bundle to the fixed types the testbench expects. 3.3 covers Spike's `--log-commits` mode — the mechanism that produces the golden reference — and exactly what each field in the log means. 3.4 walks through the firmware suite: the linker script, the assembly startup in `boot.S`, and the C entry point in `main.c`, with attention to the ABI details that determine whether the processor's early instructions are meaningful or garbage. 3.5 dissects the C++ testbench itself: how it parses the Spike log, synchronizes the two commit streams, drives the AXI memory model, and flags mismatches. 3.6 ties everything together with a Makefile that orchestrates the full compile-elaborate-simulate-verify pipeline behind a handful of targets.
+
+The goal is not just a working simulation. It is a simulation you can reason about, debug, and extend — because you built every piece of it.
+
 ---
 
 ### 3.0 Overview & Motivation
@@ -1103,7 +1118,7 @@ Both answers shape the tooling choices in this guide: **Bender** solves the firs
 
 ---
 
-Here is section 3.1, written in the tone and structure established by 3.0, with a link to the f-maker README and the full Bender explanation from `README-Manual-sim.md` §2:
+Here is section 3.1, written in the tone and structure established by 3.0, with a link to the f-maker README and the full Bender explanation from `README-Manual-sim.md` 2:
 
 ---
 
@@ -1168,7 +1183,7 @@ When Verilator compiles this, it flattens both into anonymous word arrays — no
 
 The wrapper solves this in one move: it instantiates `cva6` internally, then cracks both structs open into individually-named, flat output ports. The testbench sees clean signals; the struct math is entirely inside the wrapper.
 
-A secondary benefit: `rvfi_probes_o` is 4196 bits (132 × 32-bit words) as a raw blob. The wrapper unpacks the commit-log fields —rvfi_probes_o` is 4196 bits (132 × 32-bit words) as a raw blob. The wrapper unpacks the commit-log fields — PC, destination register, wriop reads in §3.5.
+A secondary benefit: `rvfi_probes_o` is 4196 bits (132 × 32-bit words) as a raw blob. The wrapper unpacks the commit-log fields —rvfi_probes_o` is 4196 bits (132 × 32-bit words) as a raw blob. The wrapper unpacks the commit-log fields — PC, destination register, wriop reads in 3.5.
 
 #### Discovering the real interface
 
@@ -1311,7 +1326,7 @@ That is Spike's role here. It is the official RISC-V ISA simulator (`riscv-isa-s
 
 The plain `-l` flag gives a trace of PC and disassembled instruction — one line per instruction, no register data. That is enough for manual inspection but not for automated co-simulation.
 
-The verification goal is tighter: for every committed instruction, does the **value written to the destination register** match between CVA6 and Spike? `--log-commits` extends the log format so each line also records the destination register index and the data written to it. That maps directly onto the wrapper's `commit_rd_o` and `commit_wdata_o` outputs from §3.2. Both sides emit `(PC, rd, wdata)` tuples — the C++ testbench in §3.5 reads them in lockstep and flags the first mismatch.
+The verification goal is tighter: for every committed instruction, does the **value written to the destination register** match between CVA6 and Spike? `--log-commits` extends the log format so each line also records the destination register index and the data written to it. That maps directly onto the wrapper's `commit_rd_o` and `commit_wdata_o` outputs from 3.2. Both sides emit `(PC, rd, wdata)` tuples — the C++ testbench in 3.5 reads them in lockstep and flags the first mismatch.
 
 Without `--log-commits` the co-simulation loop has nothing to compare against beyond the PC, which catches control-flow bugs but misses silent data corruption.
 
@@ -1342,7 +1357,7 @@ The `rv32imac` string above is correct for `cv32a6_imac_sv32`. For a 64-bit targ
 
 This is not cosmetic — `rv64imafdc` adds the D extension and double-precision floating-point instructions. Running a 64-bit binary under `--isa=rv32imac` will produce traps or aborts.
 
-When you reach §3.6 and look inside the Makefile, you will see this handled via a `SPIKE_ISA` variable that switches automatically with `make ARCH=32|64`. The command in the Makefile's `_spike` target is exactly:
+When you reach 3.6 and look inside the Makefile, you will see this handled via a `SPIKE_ISA` variable that switches automatically with `make ARCH=32|64`. The command in the Makefile's `_spike` target is exactly:
 
 ```make
 $(SPIKE) --isa=$(SPIKE_ISA) -l --log-commits \
@@ -1360,7 +1375,7 @@ core   0: 0x80000000 (0x00000093) li      ra, 0
 core   0: 3 0x80000000 (0x00000093) x1  0x00000000
 ```
 
-The second line is the commit record: core index, privilege level, PC, encoding, destination register (`x1` = `ra`), and written value (`0x00000000`). That tuple is what the testbench in §3.5 parses and compares against `commit_pc_o[0]`, `commit_rd_o[0]`, and `commit_wdata_o[0]` from the wrapper.
+The second line is the commit record: core index, privilege level, PC, encoding, destination register (`x1` = `ra`), and written value (`0x00000000`). That tuple is what the testbench in 3.5 parses and compares against `commit_pc_o[0]`, `commit_rd_o[0]`, and `commit_wdata_o[0]` from the wrapper.
 
 ---
 
@@ -1368,7 +1383,7 @@ The second line is the commit record: core index, privilege level, PC, encoding,
 
 CVA6 needs a binary to execute. It does not boot Linux — it resets to a fixed address, expects code there, and has no OS, no standard library, and no dynamic loader. Every program in this section is self-contained: `_start` runs, something observable happens, `tohost` receives a nonzero write, and the core spins. That is the complete execution model.
 
-This section covers the full firmware layer from source to binary. §3.4.1 maps the files in `benchmarks/` and explains which ones matter here. §3.4.2 covers the linker script and why the boot address in the script must match the one the testbench drives. §3.4.3 walks through the assembly entry point and what changes between a 32-bit and a 64-bit build. §3.4.4 and §3.4.5 cover the C runtime stub and how C programs plug into the same infrastructure.
+This section covers the full firmware layer from source to binary. 3.4.1 maps the files in `benchmarks/` and explains which ones matter here. 3.4.2 covers the linker script and why the boot address in the script must match the one the testbench drives. 3.4.3 walks through the assembly entry point and what changes between a 32-bit and a 64-bit build. 3.4.4 and 3.4.5 cover the C runtime stub and how C programs plug into the same infrastructure.
 
 The `ARCH` variable — `32` or `64` — is the single knob that controls compiler flags, ISA strings, and calling conventions across every step in this section. There are no separate source files for each architecture; the same sources compile differently depending on what `ARCH` is set to.
 
@@ -1418,9 +1433,9 @@ Files are grouped by the layer they belong to in the simulation stack. Post-synt
 
 | File | Location | Note |
 |---|---|---|
-| `cva6_axi_wrapper.sv` | `tb/wrappers/` | Verilator's top module — covered in §3.2 |
-| `cv32a6_imac_sv32_verilator.f` | `sim/filelists/` | Ordered RTL file list for 32-bit — covered in §3.1 |
-| `cv64a6_imafdc_sv39_verilator.f` | `sim/filelists/` | Ordered RTL file list for 64-bit — covered in §3.1 |
+| `cva6_axi_wrapper.sv` | `tb/wrappers/` | Verilator's top module — covered in 3.2 |
+| `cv32a6_imac_sv32_verilator.f` | `sim/filelists/` | Ordered RTL file list for 32-bit — covered in 3.1 |
+| `cv64a6_imafdc_sv39_verilator.f` | `sim/filelists/` | Ordered RTL file list for 64-bit — covered in 3.1 |
 
 ---
 
@@ -1455,7 +1470,7 @@ SECTIONS
 
 `OUTPUT_ARCH("riscv")` names the target architecture in the ELF header. `ENTRY(_start)` records the entry symbol — this is what Spike reads to determine where to begin fetching. Without it, Spike falls back to the lowest `.text` address, which happens to be the same thing here, but the explicit declaration is cleaner and required if the binary is ever inspected with `readelf -h`.
 
-The location counter `. = 0x80000000` is the core constraint. It sets the load address of everything that follows. `.text` lands therst instruction of `_start` is at exactlrst instruction of `_start` is at exactly `0x80000000`. `.data` follows immediately after `.text` ends — this is where `tohost` and `fromhost` live (covered in §3.4.3). `.bss` comes last; it is zeroed by the startup stub in `boot.S` before `main` is called (covered in §3.4.4).
+The location counter `. = 0x80000000` is the core constraint. It sets the load address of everything that follows. `.text` lands therst instruction of `_start` is at exactlrst instruction of `_start` is at exactly `0x80000000`. `.data` follows immediately after `.text` ends — this is where `tohost` and `fromhost` live (covered in 3.4.3). `.bss` comes last; it is zeroed by the startup stub in `boot.S` before `main` is called (covered in 3.4.4).
 
 The address `0x80000000` is not arbitrary. In the C++ testbench, one of the first things done before releasing reset is:
 
@@ -1476,7 +1491,7 @@ riscv-none-elf-gcc -march=$(MARCH) -mabi=$(MABI) -mcmodel=medany \
 
 #### 3.4.3 `main_ARCH.S` — Canonical Assembly Entry Point
 
-The assembly playground is where simulation becomes interactive. Pick a handful of instructions, place them between two comment markers, run `make run`, and within seconds you have a waveform and a commit log to inspect. `main_32.S` and `main_64.S` are those playgrounds — one per architecture, for a reason that §3.4.1 glossed over and deserves a full explanation here.
+The assembly playground is where simulation becomes interactive. Pick a handful of instructions, place them between two comment markers, run `make run`, and within seconds you have a waveform and a commit log to inspect. `main_32.S` and `main_64.S` are those playgrounds — one per architecture, for a reason that 3.4.1 glossed over and deserves a full explanation here.
 
 The `ARCH` variable controls compiler flags, ISA strings, and ABI conventions uniformly for C code — the compiler handles the rest. Assembly does not get that abstraction. A file containing `sd` is a hard assembler error under `rv32imac`; a file containing `lw` in a 64-bit context assembles fine but silently sign-extends the result in ways that can look like correct behavior until a carefully chosen value breaks it. Two separate files keeps those differences explicit and catches mistakes at assemble time rather than at trace-comparison time.
 
@@ -1642,7 +1657,7 @@ stack_top:
 
 **`call main`** — The standard ABI call to the C `main` function. `ra` (return address register) is set by `call` and honored by the C code's function epilogue. `main`'s return value ends up in `a0` per the calling convention — the simulation does not inspect it, but it is there if you want to act on it.
 
-**`end_loop: j end_loop`** — In a normal embedded system this would never execute; `main` would write to `tohost` and the core would park at the equivalent loop in the C source (covered in §3.4.5). This fallback exists because if `main` somehow returned — a logic bug, a missing `while(1)` — the program counter needs somewhere safe to go. Without it the core would fetch whatever bytes follow `call main` in memory, which is undefined.
+**`end_loop: j end_loop`** — In a normal embedded system this would never execute; `main` would write to `tohost` and the core would park at the equivalent loop in the C source (covered in 3.4.5). This fallback exists because if `main` somehow returned — a logic bug, a missing `while(1)` — the program counter needs somewhere safe to go. Without it the core would fetch whatever bytes follow `call main` in memory, which is undefined.
 
 **`.bss` region** — `stack_bottom` is a label at the start of the allocation; `.space 4096` reserves 4096 bytes; `stack_top` is a label immediately past the end of those bytes. Because `stack_top` comes *after* `.space 4096` in the source, its address is `stack_bottom + 4096` — the high end of the region. This is the address `la sp, stack_top` loads. The region lands in `.bss`, which the linker places after `.data`. Because this is a simulation (the DRAM model is zero-initialized), `.bss` content is effectively zeroed without any explicit memset loop — the stack region and any zero-initialized globals start at zero without extra startup code.
 
@@ -1650,7 +1665,7 @@ stack_top:
 
 ##### The split between boot.S and main.c
 
-`boot.S` owns exactly one thing: getting to `main`. Everything before `main` (stack, zero-initialized memory) is boot.S's problem. Everything inside `main` (the algorithm, the HTIF exit write) is `main.c`'s problem. The linker combines them into a single ELF where `_start` at `0x80000000` is the first instruction CVA6 fetches, and `main` is wherever the linker places it immediately after. Neither file needs to know the other's address — `call main` resolves at link time, and `link.ld` guarantees both are in the same flat address space starting at `0x80000000`. How `main.c` signals exit to Spike is covered in §3.4.5.
+`boot.S` owns exactly one thing: getting to `main`. Everything before `main` (stack, zero-initialized memory) is boot.S's problem. Everything inside `main` (the algorithm, the HTIF exit write) is `main.c`'s problem. The linker combines them into a single ELF where `_start` at `0x80000000` is the first instruction CVA6 fetches, and `main` is wherever the linker places it immediately after. Neither file needs to know the other's address — `call main` resolves at link time, and `link.ld` guarantees both are in the same flat address space starting at `0x80000000`. How `main.c` signals exit to Spike is covered in 3.4.5.
 
 #### 3.4.5 `main.c` — C Programs
 
@@ -1820,6 +1835,17 @@ That recompiles the firmware, re-runs Spike to regenerate the golden trace, reco
 
 ### 3.5 Self-Checking C++ Testbench
 
+The testbench is the simulation harness that ties together the compiled firmware, the Verilated CVA6 model, and the Spike reference trace into a single self-checking run. The diagram below shows where it sits in the overall flow.
+
+![Testbench block diagram](Tb_BlockDiagram_dark.png#gh-dark-mode-only)
+![Testbench block diagram](Tb_BlockDiagram_light.png#gh-light-mode-only)
+
+
+The firmware source is compiled twice from the same inputs. One pass produces `firmware.bin`, a flat binary that the testbench preloads into a software RAM model at `0x80000000`. The other pass produces `firmware.elf`, which Spike executes ahead of time to generate `spike_trace.log` — the golden reference. During simulation, CVA6 fetches instructions out of that RAM, and on every retirement the testbench compares the RTL commit against the corresponding Spike entry. The red dashed boundary in the diagram marks exactly what the testbench owns: the virtual memory, the processor model, and the comparison logic. Spike runs offline, before simulation starts; it is not a co-process.
+
+This section covers the C++ internals of that testbench — the two build variants, the log parser, the synchronization state machine, the AXI memory model, and the online checker loop. The Makefile targets that invoke the build and wire everything together are described in [3.6](#36-makefile-automation).
+
+---
 
 #### 3.5.1 Testbench Variants: Waveform vs. Regression Mode
 
@@ -1914,16 +1940,633 @@ Loaded N commit lines from Spike log.
 
 giving an immediate sanity check that the expected number of instructions was parsed before RTL simulation begins.
 
-#### 3.5.3 Synchronization with Spike’s Bootrom
+#### 3.5.3 Synchronization Between RTL and Spike Streams
+
+##### Why Synchronization Is Needed
+
+Spike logs every committed instruction starting from reset, including instructions executed from its internal ROM during early boot. The RTL testbench, however, loads firmware directly into a flat 16 MB RAM mapped at `BASE_ADDR = 0x80000000ULL` (line 21, `tb_cva6_ww.cpp`) to that sts `boot_addr_i` to that same address (line 151). There is no bootrom in the testbench. As a result, the two streams diverge at their heads: Spike's `spike_trace.es the RTL will never produce. The synchronization step The synchronization step discards those leading Spike entries so both streams begin at a common PC.
+
+##### The Sync State Machine
+
+Synchronization is controlled by a single boolean flag declared alongside its companions at line 134–136:
+
+```cpp
+size_t spike_idx = 0;    // cursor into spike_log[]
+bool   is_synced  = false;
+bool   sim_failed = false;
+```
+
+`is_synced` behaves as a two-state machine with exactly one transition direction — `false → true` — and no path back. Once the RTL and Spike streams are aligned, they remain locked in lockstep for the rest of simulation.
+
+##### Trigger: `commit_ack_o`
+
+The sync (and comparison) logic fires whenever the RTL signals a retirement:
+
+```cpp
+if (top->commit_ack_o > 0 && !spike_log.empty()) { ... }
+```
+
+The `!spike_log.empty()` guard skips co-simulation entirely if `spike_trace.log` failed to load. Inside, a loop handles the dual-issue commit port (up to two retirements per clock cycle):
+
+```cpp
+for (int i = 0; i < 2; i++) {
+    if ((top->commit_ack_o >> i) & 1) {
+        // extract pc, rd, wdata for commit port i
+        // → sync path if !is_synced, compare path if is_synced
+    }
+}
+```
+
+Each commit port is processed independently through the same sync/compare logic.
+
+##### The Scan Loop (UNSYNCED → SYNCED)
+
+When `is_synced` is `false`, each RTL commit triggers a forward-only linear scan over `spike_log`:
+
+```cpp
+if (!is_synced) {
+    while (spike_idx < spike_log.size() && spike_log[spike_idx].pc != pc) {
+        spike_idx++;   // discard leading Spike entries
+    }
+    if (spike_idx < spike_log.size()) {
+        is_synced = true;
+        printf("\n[SYNC] Synced RTL and Spike at PC=0x%016llx\n", pc);
+    } else {
+        printf("[ERROR] Could not find RTL starting PC (0x%016llx) in Spike log!", pc);
+        sim_failed = true;
+        break;
+    }
+}
+```
+
+Key properties of this loop:
+
+- **Forward-only, no rewind.** `spike_idx` advances monotonically. Discarded entries are gone.
+- **Matches on RTL's first committed PC.** The scan stops the moment `spike_log[spike_idx].pc` equals the PC the RTL just retired.
+- **Cursor stays at the match.** After the transition, `spike_idx` points to the matched entry — it is not incremented here. The very same entry is immediately consumed by the lockstep comparison block that follows within the same loop iteration.
+- **Failure is terminal.** If the RTL's first PC appears nowhere in the log, `sim_failed = true` and the inner port loop breaks. The main simulation loop detects `sim_failed` and exits with return code 1. This condition also surfaces through the stall watchdog: if the RTL commits instructions but sync never succeeds, `last_commit_time` keeps updating while `is_synced` stays false, and once no commit arrives for `MAX_STALL_TIME = 100000` ticks, the watchdog triggers independently.
+
+##### After Synchronization: Lockstep Comparison
+
+Once `is_synced` is `true`, every RTL commit is compared against `spike_log[spike_idx]`:
+
+- **PC mismatch** → `[DIVERGENCE ERROR: PC MISMATCH]`, `sim_failed = true`
+- **Destination register mismatch** (when `rd != 0` and Spike recorded a write) → `[DEST REG MISMATCH]`
+- **Write-data mismatch** → `[DATA MISMATCH]`
+- **Match** → `[MATCH] PC=... | Spike: <full_line>`
+
+On every comparison (pass or fail), `spike_idx++` advances the Spike cursor and `last_commit_time = main_time` resets the stall watchdog.
 
 #### 3.5.4 RAM Model and AXI Handshake
 
+##### The memory model
+
+The testbench does not connect CVA6 to a real DRAM or a TileLink/Wishbone bus model. Instead it owns the memory entirely in software:
+
+```cpp
+#define RAM_SIZE  (1024 * 1024 * 16)   // 16 MB
+#define BASE_ADDR  0x80000000ULL
+
+std::vector<uint8_t> ram(RAM_SIZE, 0);
+```
+
+Address translation is a plain subtraction. For any access at address `addr`, the byte index into `ram` is `addr - BASE_ADDR`. There is no page table, no bootrom region, and no aliasing — anything that falls outside `[BASE_ADDR, BASE_ADDR + RAM_SIZE)` is out of range.
+
+**Firmware preload.** Before the reset sequence, the testbench opens `firmware.bin` and reads it directly into `ram.data()`:
+
+```cpp
+std::ifstream bin_file("firmware.bin", std::ios::binary);
+// failure → CRITICAL ERROR + exit(1)
+bin_file.read(reinterpret_cast<char*>(ram.data()), RAM_SIZE);
+```
+
+The binary is already linked at `0x80000000` by the linker script (3.4.3), so the flat-copy-with-subtraction scheme works without any `--change-addresses` pass. That also explains why `boot_addr_i` is driven to `BASE_ADDR` during reset.
+
+##### Helper functions: `read_ram` and `write_ram`
+
+Two small functions wrap every memory access. Both align the incoming address to an 8-byte boundary before doing anything else.
+
+`read_ram(ram, addr)` bounds-checks the aligned offset, then copies 8 bytes into a `uint64_t` with `memcpy` and returns it. Any out-of-range address returns 0 silently — the CVA6 AXI subordinate is allowed to respond with data rather than an error, and the co-simulation layer will catch the mismatch if the instruction actually commits.
+
+`write_ram(ram, addr, data, strb)` performs a byte-granular write using the AXI write-strobe. For each of the 8 byte lanes `i`, it writes `(data >> (i*8)) & 0xFF` into `ram[offset+i]` only when bit `i` of `strb` is set. This correctly handles sub-word stores such as `sb` and `sh` without any masking overhead in the caller.
+
+##### AXI state
+
+AXI has five independent channels; the testbench manages them with a small set of variables declared once before the main loop:
+
+```cpp
+std::queue<AXI_Req> ar_queue, aw_queue;  // AXI_Req { uint64_t addr; uint32_t id; uint8_t len; }
+std::queue<uint32_t> b_queue;            // pending write-response IDs
+
+bool     r_active = false;  uint64_t r_addr;  uint32_t r_id;  int r_beats;
+bool     w_active = false;  uint64_t w_addr;  uint32_t w_id;  int w_beats;
+```
+
+`ar_queue` and `aw_queue` decouple address acceptance from data movement. Because `ar_ready_i` and `aw_ready_i` are held permanently high, CVA6 can issue address beats back-to-back; the queue absorbs them until the data channel is free to service them.
+
+`b_queue` holds write-response IDs. An ID enters the queue when the last write-data beat is accepted and leaves when the core drives `b_ready_o` high.
+
+`r_active` and `w_active` track whether the read-data channel and the write-data channel are currently mid-burst. While active, `r_beats` / `w_beats` count down from `len+1` to 0, and `r_addr` / `w_addr` advance by 8 after each beat.
+
+##### Main-loop channel logic
+
+Each simulated clock cycle executes five phases in order.
+
+**1 — Sample before the rising edge.** The loop reads all AXI output signals from the DUT — `ar_valid_o`, `aw_valid_o`, `w_valid_o`, `r_ready_o`, `b_ready_o`, plus the associated data fields — and computes five fire flags:
+
+ar_fire  = ar_valid_o && ar_ready_i
+aw_fire  = aw_valid_o && aw_ready_i
+w_fire   = w_valid_o  && w_ready_i
+r_fire   = r_valid_i  && r_ready_o
+b_fire   = b_valid_i  && b_ready_o
+
+
+Sampling *before* `clk_i=1` ensures the testbench sees the combinatorial outputs that CVA6 held during the low phase, consistent with a setup-time model.
+
+**2 — Evaluate the rising edge.** `clk_i = 1; eval()` advances the RTL state. The co-simulation compare block (3.5.3) runs here, inside the same half-cycle.
+
+**3 — Apply fires.** With the clock now high, the testbench commits the transactions that fired:
+
+- `ar_fire` → push `{addr, id, len}` onto `ar_queue`.
+- `aw_fire` → push onto `aw_queue`; set `w_active = true`, latch `w_addr`, `w_id`, `w_beats = len+1`.
+- `w_fire` → call `write_ram(ram, w_addr, w_data, w_strb)`; decrement `w_beats`; advance `w_addr += 8`. When `w_last` is asserted or beats reach zero, clear `w_active` and push `w_id` onto `b_queue`.
+- `r_fire` → decrement `r_beats`; advance `r_addr += 8`; clear `r_active` when beats reach zero.
+- `b_fire` → `b_queue.pop()`.
+
+**4 — Start next transactions.** If the read channel is idle and `ar_queue` is non-empty, pop the front entry and set `r_active = true`, latching address, ID, and `r_beats = len+1`. The write channel does the same from `aw_queue`.
+
+**5 — Drive response signals.** The testbench writes back the following before calling `clk_i = 0; eval()`:
+
+| Signal | Driven value |
+|---|---|
+| `ar_ready_i`, `aw_ready_i` | always 1 |
+| `r_valid_i` | `r_active` |
+| `r_data_i` | `r_active ? read_ram(ram, r_addr) : 0` |
+| `r_id_i` | `r_id` |
+| `r_resp_i` | 0 (OKAY) |
+| `r_last_i` | `r_active && r_beats == 1` |
+| `w_ready_i` | `w_active` |
+| `b_valid_i` | `!b_queue.empty()` |
+| `b_id_i` | `b_queue.front()` |
+| `b_resp_i` | 0 (OKAY) |
+
+`r_last_i` uses `r_beats == 1` — the *current* beat is the last one — so the signal is asserted one cycle before `r_beats` reaches zero, matching the AXI protocol requirement.
+
+##### Simulation termination
+
+Neither testbench watches for writes to `tohost` or any magic address. The loop ends in one of four ways:
+
+1. **Normal completion** — `is_synced` is true, the Spike log is exhausted (`spike_idx >= spike_log.size()`), and at least one instruction was logged. This produces `[SUCCESS]`.
+2. **Co-sim mismatch** — a PC, register, or data mismatch sets `sim_failed = true`. The loop continues until Spike entries run out, then reports `[FAILED]`.
+3. **Stall timeout** — no new commit has been seen for `MAX_STALL_TIME = 100 000` half-cycles. The loop breaks and reports either `[TIMEOUT]` or `[WARNING] SIMULATION INCOMPLETE (Never synced)` depending on whether sync was ever achieved.
+4. **Log not exhausted at hard limit** — `tb_cva6_ww.cpp` caps at 50 M time steps and `tb_cva6_wow.cpp` at 5 M; hitting either limit without sync produces the same never-synced warning.
+
+The firmware's own `while(1)` after the final `tohost` write (3.4.2) means the processor never traps to an unknown address — it simply keeps executing the spin loop, and the testbench terminates when Spike's log runs dry rather than waiting for a hardware signal.
+
 #### 3.5.5 HTIF Termination: `tohost` Detection
+
+##### What HTIF is and why it exists
+
+HTIF (Host–Target Interface) is the minimal IPC channel between a RISC-V target and its host environment. It was designed for Spike: when the target program wants to exit, it writes a nonzero value to a well-known symbol called `tohost`. Spike polls that memory location every simulated cycle, detects the write, and exits with the encoded return code.
+
+The protocol predates any standardized AXI or TileLink bus: it is not a memory-mapped peripheral, it is just a global variable that both sides have agreed to watch. That is why `tohost` and `fromhost` are `.global` symbols in the firmware rather than fixed hardware addresses — Spike discovers their locations from the ELF symbol table, not from a hard-coded offset.
+
+##### The firmware side
+
+In assembly firmware (`boot.S`), the two symbols are declared in `.data`:
+
+```asm
+    .align 6               # 64-byte aligned
+    .global tohost
+tohost:    .dword 0
+
+    .global fromhost
+fromhost:  .dword 0
+```
+
+The `.align 6` satisfies Spike's internal alignment requirement for HTIF polling. The size is always `.dword` (8 bytes) regardless of XLEN because **the HTIF protocol is always 64-bit** — on an RV32 build, the firmware writes to a 64-bit slot with a 32-bit store and zero-extends implicitly.
+
+The exit sequence for RV64 is:
+
+```asm
+la   t0, tohost
+li   t1, 1          # exit code 0 encoded as (code << 1) | 1
+sd   t1, 0(t0)
+```
+
+For RV32 replace `sd` with `sw`. Writing `1` signals clean exit; writing any other odd value encodes a nonzero exit code. Even values are reserved for device commands (disk, console) and are not used in these test programs.
+
+`fromhost` is written by Spike to acknowledge device commands. None of the test firmware uses it, but the symbol must exist and be exported. If it is absent, Spike will warn or refuse to run. It is a linker-level contract, not a runtime requirement.
+
+In C firmware the same two variables appear as:
+
+```c
+volatile unsigned long tohost   = 0;
+volatile unsigned long fromhost = 0;
+```
+
+`volatile` is not optional. Without it, a compiler that can see that no code ever *reads* `tohost` after the store is free to eliminate the write as dead. `volatile` tells the compiler that an external agent — Spike — may observe or modify the variable, making the store side-effectful and therefore mandatory.
+
+##### The parking loop
+
+Immediately after the `tohost` store, every firmware variant executes:
+
+```c
+while (1) { /* spin */ }
+```
+
+or in assembly:
+
+```asm
+1:  j 1b
+```
+
+This is intentional. Once `tohost` is written, Spike will detect it and stop producing trace output, but the Verilator simulation keeps running until the C++ testbench decides to stop. Without the parking loop, the processor would keep fetching past the end of `.text` into uninitialized DRAM (all zeros, which decode as `addi x0, x0, 0` — harmless but infinite) or, worse, into addresses that have no backing memory at all, generating spurious commits that the co-simulation checker would attempt to match against an empty Spike log. The `while(1)` keeps the instruction stream deterministic and quiet while the testbench finishes draining whatever Spike entries remain.
+
+##### How termination actually works in the testbench
+
+The section title says "tohost Detection," and the documentation narrative at 3.4.4 describes both Spike and the C++ testbench as monitoring `tohost` every cycle. The code tells a different story.
+
+Neither `tb_cva6_ww.cpp` nor `tb_cva6_wow.cpp` contains any reference to `tohost`, `fromhost`, `0x80000000`, or any magic store address. There is no polling loop, no symbol lookup, and no `$finish`-equivalent triggered by a memory write. **The C++ testbench does not detect the `tohost` write at all.**
+
+The real termination arbiter is the Spike log. Spike *does* detect `tohost` (that is what stops it from producing further trace lines), so the log file simply ends. The testbench terminates when it has consumed all entries in that log, not when it sees a hardware event. The `tohost` mechanism is thus:
+
+| Layer | What it does |
+|---|---|
+| Firmware | Writes `1` to `tohost`, then spins |
+| Spike | Detects the write via ELF-symbol polling, stops emitting commits, exits |
+| `spike_trace.log` | File ends at the last committed instruction before the spin loop |
+| C++ testbench | Advances `spike_idx` until `spike_idx >= spike_log.size()`, then exits with `[SUCCESS]` |
+
+The `tohost` write is the *cause* of log exhaustion; log exhaustion is what the testbench actually checks.
+
+##### Why this matters for debugging
+
+This indirection has one practical consequence: **if Spike never sees the `tohost` write, the log never ends, and the testbench exits via timeout rather than via success.**
+
+The two most common ways Spike misses the write:
+
+1. **`tohost` is not exported.** The symbol was declared without `.global` or with a typo. Spike finds no `tohost` in the symbol table, so it never polls any address. The program can write to the variable all it wants; Spike will not notice. Fix: check the ELF with `nm firmware.elf | grep tohost`.
+
+2. **The `tohost` store is optimized away.** The C compiler dropped the write because `volatile` was missing. The variable exists in the ELF, Spike finds it, but the store instruction is never emitted. Fix: add `volatile`, recompile, verify with `objdump -d firmware.elf` that the store appears before the branch.
+
+A third, subtler case: the firmware traps or misspeculates before reaching the `tohost` store. The program never gets there, Spike keeps running indefinitely (or until its own step limit), and the log grows much longer than expected — the testbench will eventually hit the stall watchdog. Checking the last few lines of `spike_trace.log` usually reveals where execution diverged.
 
 #### 3.5.6 The Online Checker Loop
 
-#### 3.5.7 Block Diagram
+The checker runs inside the main simulation `while` loop. Each iteration advances the clock by one half-cycle, drives the AXI response channels (3.5.4), and then, on the rising edge, fires the co-simulation block if the RTL has retired anything. The three termination guards embedded in the loop condition itself make explicit polling unnecessary:
+
+```cpp
+while (!Verilated::gotFinish()
+       && main_time < 5000000    // hard time cap (50M in tb_cva6_wow.cpp)
+       && !sim_failed)
+```
+
+`Verilated::gotFinish()` catches a Verilog `$finish` call — unlikely in this design but included defensively. The time cap provides an absolute backstop. `sim_failed` turns every mismatch and every watchdog trigger into a clean, final loop exit.
+
+##### The commit handler
+
+The block that does all the work fires at line 195:
+
+```cpp
+if (top->commit_ack_o > 0 && !spike_log.empty()) {
+    for (int i = 0; i < 2; i++) {
+        if ((top->commit_ack_o >> i) & 1) {
+            // extract pc, rd, wdata for port i, then sync or compare
+        }
+    }
+}
+```
+
+`commit_ack_o` is a 2-bit mask, one bit per retirement port. CVA6 is dual-issue capable: both bits can be set in the same clock cycle, meaning two instructions committed simultaneously. The `for (int i = 0; i < 2; i++)` loop handles both ports sequentially through the same sync/compare path, so dual-issue commits are compared against two consecutive Spike entries in the same half-cycle.
+
+The `!spike_log.empty()` guard at the outer level silently disables co-simulation if the log file failed to load. No crash, no assert — co-sim just never activates.
+
+**Extracting fields from packed ports.** Verilator exposes the packed `commit_pc_o` array as flat 32-bit words. For RV64, reconstructing a 64-bit PC for port `i` requires recombining two adjacent 32-bit halves:
+
+```cpp
+uint64_t pc = ((uint64_t)top->commit_pc_o[i*2+1] << 32)
+             |  (uint64_t)top->commit_pc_o[i*2+0];
+```
+
+The destination register is simpler — a 5-bit slice per port:
+
+```cpp
+uint32_t rd = (top->commit_rd_o >> (i * 5)) & 0x1F;
+```
+
+`wdata` follows the same double-word pattern as the PC. This extraction is not part of the co-simulation logic proper; it is a width-adaptation layer imposed by Verilator's type mapping.
+
+##### Lockstep comparison
+
+Once `is_synced` is `true` (established during the scan described in 3.5.3), every RTL retirement is compared against `spike_log[spike_idx]`. The comparison is three independent checks applied in order:
+
+1. pc == expected.pc
+2. rd == expected.rd        (only when expected.has_write is true and rd != 0)
+3. wdata == expected.wdata  (only when the register check passed)
+
+
+All three must pass for a `[MATCH]` to be recorded. The first failure short-circuits: a PC mismatch does not print a data mismatch on top of it.
+
+On any outcome — pass or fail — two things always happen at the end of the port's iteration:
+
+```cpp
+spike_idx++;               // advance the Spike cursor
+last_commit_time = main_time;  // reset the stall watchdog
+```
+
+`last_commit_time` is updated even on a mismatch because the processor *did* retire an instruction; the stall watchdog cares only about whether the pipeline is moving, not whether it is moving correctly.
+
+##### Four failure points
+
+`sim_failed` is set at exactly four places, all following the same pattern:
+
+```cpp
+sim_failed = true;
+break;   // exits the dual-issue port loop only
+```
+
+| Source | Condition | Printed message |
+|---|---|---|
+| Sync failure | RTL's first PC not found in log | `[ERROR] Could not find RTL starting PC (0x...)` |
+| PC mismatch | `pc != expected.pc` | `[DIVERGENCE ERROR: PC MISMATCH]` |
+| Register mismatch | `rd != expected.rd` (when `has_write`) | `[DIVERGENCE ERROR: DEST REG MISMATCH]` |
+| Data mismatch | `wdata != expected.wdata` | `[DIVERGENCE ERROR: DATA MISMATCH]` |
+
+The `break` exits the inner port `for`-loop, not the outer `while`. The outer loop condition re-evaluates `!sim_failed` at the top of the next iteration, so the simulation terminates on the cycle *following* the mismatch — not mid-cycle. This matters for waveform debugging: the VCD contains the bad commit cycle in full.
+
+All four messages include both the RTL-side and Spike-side values, plus `expected.full_line` (the raw Spike log text), so a divergence report is self-contained without needing to cross-reference the log file manually.
+
+##### The stall watchdog
+
+Declared once before the loop:
+
+```cpp
+const vluint64_t MAX_STALL_TIME = 100000;  // ~50 000 clock cycles
+```
+
+Checked once per iteration after the clock logic:
+
+```cpp
+if (main_time - last_commit_time > MAX_STALL_TIME) {
+    if (!is_synced) {
+        printf("[WARNING] SIMULATION INCOMPLETE (Never synced)\n");
+    } else {
+        printf("[STALL ERROR] RTL stopped committing for 100000 time units!\n");
+        printf("  Pipeline is likely stalled, trapped, or waiting on memory\n");
+        if (spike_idx > 0)
+            printf("  Last successful PC: 0x%016llx\n", spike_log[spike_idx-1].pc);
+    }
+    sim_failed = true;
+    break;
+}
+```
+
+`last_commit_time` is initialized to `main_time` at the point the first commit is seen and refreshed on every subsequent commit regardless of pass/fail. The watchdog therefore measures *inter-commit silence*, not elapsed wall time since simulation start. A pipeline that keeps retiring instructions — even wrong ones — will never trigger it.
+
+The two branches serve different debugging workflows. Never-synced means the RTL's first PC did not appear in the log at all; the most likely causes are a firmware build mismatch or a wrong `boot_addr_i`. Stalled-after-sync means execution was proceeding correctly and then stopped; the "last successful PC" printed by the watchdog is the last address that matched, which is typically the instruction immediately before a trap, a memory access that never returned, or a branch to an unmapped address.
+
+##### Exit logic and result banners
+
+Normal termination happens inside the loop body, not through the condition:
+
+```cpp
+if (is_synced && spike_idx >= spike_log.size() && spike_log.size() > 0)
+    break;
+```
+
+This fires the first cycle after the last Spike entry is consumed. From this point, four mutually exclusive banners are possible:
+
+| Condition | Banner |
+|---|---|
+| `!sim_failed` and log exhausted normally | `[SUCCESS] All N instructions matched perfectly.` |
+| `sim_failed` | `[FAILED] SIMULATION HALTED.` |
+| Synced, hard time limit hit, log not exhausted | `[TIMEOUT]` + `Verified N/M instructions` |
+| Never synced, hard time limit hit | `[WARNING] SIMULATION INCOMPLETE (Never synced)` |
+
+The exit code at line 354 maps these directly to shell semantics:
+
+```cpp
+return sim_failed ? 1 : 0;
+```
+
+`[SUCCESS]` and the stall-free timeout both return 0. `[FAILED]` and both watchdog paths return 1. The Makefile can therefore use the exit code directly for pass/fail reporting in batch regression runs without parsing stdout.
 
 ---
 
 ### 3.6 Makefile Automation
+
+> Everything we did in sections 3.1 through 3.5 — generating the filelist with Bender, compiling the firmware, producing the Spike reference trace, building the Verilator model against the AXI wrapper, and finally running the co-simulation — works, but doing it by hand every time is tedious and error-prone. One forgotten flag or a stale `firmware.elf` and you are debugging the flow instead of the core. The `sim/Makefile` exists to collapse that entire manual sequence into a single command.
+
+The general invocation pattern is:
+
+```bash
+cd sim
+make [ARCH=32|64] [TARGET]
+```
+
+Both parts are optional: running a bare `make` is equivalent to `make ARCH=64 run`.
+
+---
+
+#### 3.6.1 The `ARCH` Switch
+
+The single variable `ARCH` (default: `64`) reconfigures every stage of the flow consistently — the GCC target, the Spike ISA string, the Bender filelist, and the testbench compile flags all follow from it:
+
+| Setting | GCC `-march`/`-mabi` | Spike ISA | Verilator filelist | Extra CFLAGS |
+|---|---|---|---|---|
+| `ARCH=32` | `rv32imac` / `ilp32` | `rv32imac` | `filelists/cv32a6_imac_sv32_verilator.f` | `-DRV32` |
+| `ARCH=64` (default) | `rv64imafdc` / `lp64d` | `rv64imafdc` | `filelists/cv64a6_imafdc_sv39_verilator.f` | — |
+
+> **Important:** This is exactly why section 3.1 insisted on generating *both* filelists and making them portable via `${CVA6_ROOT}`. The Makefile simply picks the right one — no re-running Bender, no editing paths. The `-DRV32` define is forwarded to the C++ testbench so its Spike-log parser and memory model match the narrower XLEN.
+
+---
+
+#### 3.6.2 Anatomy of the Pipeline
+
+Every `run*` target funnels into the same internal chain:
+
+```make
+_pipeline: _clean _fw _spike _prepare _compile _exec
+```
+
+Each stage is a direct automation of a section you have already seen:
+
+1. **`_clean`** — removes stale artifacts (`obj_dir/`, `firmware.*`, `spike_trace.log`, `waveform.vcd`, `trace_hart_0.dasm`) so every run starts from a known state.
+2. **`_fw`** — invokes `riscv-none-elf-gcc` with `-nostdlib` and the `link.ld` script from section 3.4.2, producing `firmware.elf` and the flat `firmware.bin` the testbench loads into RAM.
+3. **`_spike`** — runs the reference model from section 3.3:
+
+   ```bash
+   spike --isa=$(SPIKE_ISA) -l --log-commits firmware.elf 2> spike_trace.log
+   ```
+
+   Remember from section 3.5.2: Spike writes its commit log to **stderr**, hence the `2>` redirect. The ELF is also copied into `benchmarks/spike-checking/` for later offline inspection.
+4. **`_compile`** — the Verilator build from sections 3.1–3.2, fully spelled out:
+
+   | Flag | Purpose |
+   |---|---|
+   | `--cc --exe --build -j 0` | C++ model + link the testbench + build immediately, using all cores |
+   | `-f filelists/...` | the Bender-generated filelist selected by `ARCH` |
+   | `tb/wrappers/cva6_axi_wrapper.sv` + `--top-module cva6_axi_wrapper` | our unpacked-port wrapper from section 3.2 as the simulation top |
+   | `-Wno-PINMISSING -Wno-BLKANDNBLK -Wno-fatal` | tolerate known upstream lint noise instead of aborting |
+   | `-O1` | mild optimization — fast enough builds, fast enough sim |
+
+5. **`_exec`** — runs the resulting `./obj_dir/Vcva6_axi_wrapper`, which performs the online Spike-vs-RTL checking described in section 3.5.
+
+---
+
+#### 3.6.3 Run Targets: One Per Firmware
+
+The only things that differ between targets are *which firmware* is compiled and *which testbench* (with or without waveform tracing, per the 3.5.1 comparison) is linked:
+
+| Target | Firmware | Testbench | Waveform |
+|---|---|---|---|
+| `run` (default) | `main_$(ARCH).S` — the assembly playground | `tb_cva6_ww.cpp` | Yes |
+| `run_bug` | `bug_$(ARCH).S` — the known-bug reproducer | `tb_cva6_ww.cpp` | Yes |
+| `run_c` | `boot.S` + `main.c` | `tb_cva6_ww.cpp` | Yes |
+| `run_complex` | `complex_$(ARCH).S` | `tb_cva6_wow.cpp` | No |
+| `run_matmul` | `boot.S` + `matmul.c` | `tb_cva6_wow.cpp` | No |
+| `run_avg` | `boot.S` + `avg.c` | `tb_cva6_wow.cpp` | No |
+
+> **Note:** The pattern is deliberate. Short tests you actively debug (`run`, `run_bug`, `run_c`) use the *with-waveform* testbench and its 5M-ns limit. Long-running benchmarks (`run_matmul`, `run_avg`, `run_complex`) use the *without-waveform* variant with the 50M-ns budget — dumping a VCD for a matrix multiply would produce a multi-gigabyte file and slow the simulation to a crawl for no benefit.
+
+A few concrete examples:
+
+```bash
+make                    # RV64, assembly playground, with waveform
+make ARCH=32 run_bug    # RV32, bug reproducer, with waveform
+make run_matmul         # RV64, C matmul benchmark, no waveform
+```
+
+---
+
+#### 3.6.4 Utility Targets
+
+Two housekeeping targets round out the flow:
+
+- **`make wave`** — opens the freshly dumped trace in GTKWave (`gtkwave waveform.vcd`). Only meaningful after one of the waveform-enabled targets.
+- **`make clean`** — the user-facing version of `_clean`; wipes `obj_dir/`, `waveform.vcd`, `trace_hart_0.dasm`, `firmware.*`, and `spike_trace.log`.
+
+> **Note:** Since `_clean` is the first stage of every `_pipeline`, you never *need* to run `make clean` manually before a run — it is there for when you want to leave the directory tidy.
+
+---
+
+#### 3.6.5 Post-Synthesis Targets
+
+The Makefile also carries two targets that belong to a different flow entirely:
+
+```bash
+make post-syn-sim-32
+make post-syn-sim-64
+```
+
+These compile the dedicated `main-syn.S` firmware, convert it to a Verilog hex image (`objcopy --verilog-data-width=4 --change-addresses -0x80000000`), and launch Vivado in batch mode with the corresponding `*_post_syn_sim.tcl` script from `fpga/build/`. They are the automated form of the XSIM flow covered in **section 1** of this guide — refer there for the netlist background and waveform interpretation.
+
+---
+
+With this, the loop is closed: everything built up manually across sections 3.1–3.5 is now reproducible with one command, and the co-simulation flow becomes a tool you *use* rather than a procedure you *perform*.
+
+
+<div align="center">
+  <img src="Tb_BlockDiagram_dark.png#gh-dark-mode-only" alt="Final block diagram">
+  <img src="Tb_BlockDiagram_light.png#gh-light-mode-only" alt="Final block diagram">
+  <p><i>The complete automation workflow, implemented via Makefile, is illustrated in the block diagram.</i></p>
+</div>
+
+## 4. Processor Performance Comparison
+
+Based on the testbench outputs, we compared execution time across four processor configurations using three workloads: a complex random assembly program, a C-based matrix multiplication, and a C-based averaging program.
+
+The four evaluated configurations are:
+*   **32-bit** (Superscalar OFF)
+*   **32-bit** (Superscalar ON)
+*   **64-bit** (Superscalar OFF)
+*   **64-bit** (Superscalar ON)
+
+**Interpreting Testbench Output: Cycle Count as the Metric**  
+Simulation time in picoseconds (ps) does not reflect real-world wall-clock time. In Verilator, each clock cycle maps to a fixed ps value (e.g., 2000 ps), so the reported time is directly proportional to the total number of clock cycles. A lower ps value on a Dual-Issue configuration simply means the processor completed the same workload in fewer cycles.
+
+### 4.1 Executed Benchmarks
+
+The three workloads were selected to stress different parts of the pipeline rather than to represent a single application class. One exercises control flow, the ALU, the multiplier, and memory dependency chains almost exclusively in assembly; the other two are C programs whose behaviour is dominated by nested-loop integer arithmetic but whose loop counts differ by orders of magnitude. Together they produce a spread of runtimes — from a few thousand to over five million simulated cycles — which is useful when comparing cycle counts between configurations.
+
+All three are bare-metal RISC-V programs. They contain no standard library: the heap-copy and fill routines that `avg.c` and `matmul.c` need are implemented by hand (`memcpy`/`memset`, `avg.c` lines 1–18, `matmul.c` lines 1–19), and the assembly benchmark has no runtime at all. Each program signals completion by writing `1` to `tohost` and then spinning in an infinite loop, so execution ends at the same deterministic point on every configuration. This matters for the comparison: the reported value depends only on how many cycles the core took to reach the same instruction, not on any OS or I/O behaviour.
+
+#### 4.1.1 Complex Random Assembly (complex.S)
+
+Two versions of this benchmark exist — `complex_32.S` for the 32-bit core and `complex_64.S` for the 64-bit core — and they are structurally identical line for line. The only difference is that every `lw`/`sw` in the 32-bit version becomes `ld`/`sd` in the 64-bit version, which is necessary because the constants loaded at runtime (e.g., `0x13579bdf2468ace1`, `0x7fffffffffffffff`) are full 64-bit values that `lw` cannot represent; the rest of the instruction mix — ALU, multiply, divide, branch, and shift — is word-for-word the same.
+
+The program operates on a 512-byte scratchpad buffer (`custom_scratch`) in `.bss` and runs in three phases:
+
+**Phase 1 — Initialisation (`init_loop`, 64 iterations, lines 32–66):** Each iteration computes a value through a chain of `xor`/`add`/`sub`/`and`/`or`/`not` and two multiply variants (`mul`, `mulh`), then stores the result at offset `s0×8` into the scratchpad. This seeds the buffer with data-dependent values that defeat any constant-folding a simulator might attempt.
+
+**Phase 2 — Stress loop (64×512 = 32 768 iterations, lines 70–200):** The outer loop runs 64 times; the inner loop walks all 512 scratchpad slots. Each inner iteration chains two dependent loads, an `add`/`xor`/`sub` sequence, logical shifts (`slli`, `srli`, `srai`), XNOR emulated as `xor` followed by `not` (the Zbb extension is absent from both target ISAs), all four multiply variants (`mul`, `mulh`, `mulhu`, `mulhsu`), all four divide/remainder variants (`div`, `divu`, `rem`, `remu` — each divisor is OR-ed with 1 to prevent divide-by-zero), and several conditional branches (`beqz`, `bnez`, `bltu`). The combination of load-use dependency chains, multiply/divide latency, and dense branching is the reason this benchmark runs roughly 20× longer than `matmul.c`.
+
+**Phase 3 — Reduction (`reduce_loop`, 64 iterations, lines 204–239):** Accumulates a running sum, XOR, and product over the full scratchpad, then performs one final `div`/`rem` on the accumulated state. The two signature values (`s2`, `s3`) are written to the last two 8-byte slots of the scratchpad before termination.
+
+Termination follows the same convention as the other benchmarks: the value `1` is written to `tohost` (`sd t1, 0(t0)` in the 64-bit version, `sw` in the 32-bit version), after which the program enters an infinite spin loop. Because both versions reach this point after the same sequence of instructions and the same number of iterations, the cycle count difference between the 32-bit and 64-bit rows in the results table is attributable entirely to microarchitectural differences between the two cores, not to workload differences.
+
+#### 4.1.2 Matrix Multiplication (matmul.c)
+
+This benchmark contains two independent integer matrix multiplications of different sizes, both compiled without the standard library. The helper routines `memcpy` (lines 1–8) and `memset` (lines 10–16) are hand-implemented as byte-by-byte loops, and `tohost`/`fromhost` are declared `volatile unsigned long` (lines 18–19) to use the HTIF signalling convention shared with the other benchmarks.
+
+All matrices are stack-local `int` arrays inside `main` — no heap allocation, no `malloc`. The 5×5 matrices (`A`, `B`, `C`) occupy 100 bytes each and the 10×10 matrices (`A_10`, `B_10`, `C_10`) occupy 400 bytes each, all sitting in the same stack frame.
+
+**Problem 1 — 5×5 multiplication (lines 21–53):** `A[5][5]` is initialised with the sequential values 1–25 (row-major) and `B[5][5]` is an identity matrix. The result `C[5][5]` is computed by the classic three-level `i-j-k` loop (`C[i][j] += A[i][k] * B[k][j]`, lines 46–53), producing 125 multiply-accumulate operations. Because B is the identity, `C == A` after the loop, which makes correctness trivial to verify.
+
+**Problem 2 — 10×10 multiplication (lines 58–95):** `A_10[10][10]` holds mixed positive, negative, and zero values with no obvious pattern (e.g. row 0 alternates sign, row 4 has a stride-2 repeat of `5, 0`). `B_10[10][10]` has similarly irregular entries with small repeating sub-patterns (rows of all-7s, alternating `2,1`, etc.). The same `i-j-k` structure (lines 88–95) runs to completion, performing 1000 multiply-accumulate operations. The irregular data prevents the compiler from simplifying any iteration away at compile time.
+
+**Termination (lines 97–107):** Before signalling, `final_result` is computed as `C[4][4] + C_10[9][9]` (line 101). Consuming one element from each output matrix gives the compiler a visible use for both computations, preventing dead-code elimination of either loop nest. `tohost = 1` (line 103) then signals the simulator, followed by `while(1)` (line 104) as an unconditional spin. The `return final_result` on line 106 is unreachable but satisfies the compiler's return-type requirement.
+
+The total arithmetic work — 1125 integer multiply-accumulates across two loop nests — is modest compared to `complex.S`, which explains why `matmul.c` runs roughly 10–12× faster in the results table. The benchmark stresses the integer multiplier and the store/load pipeline for stack-resident arrays, with no memory-dependency chains between iterations and no division.
+
+#### 4.1.3 Averaging (avg.c)
+
+This benchmark implements a 5-sample sliding-window moving average over a 10-element integer signal. Like the other two programs, it is compiled bare-metal: `memcpy` (lines 3–10) and `memset` (lines 12–18) are hand-implemented as byte-by-byte loops. Neither is ever called directly inside `main` — they are retained either as compiler-emit targets or for structural consistency with `matmul.c`. The `#include <stdio.h>` at line 1 is a leftover from an earlier draft; `printf` is never referenced and the standard library is not linked. The HTIF interface follows the same convention: `volatile unsigned long tohost` and `fromhost` at lines 21–22.
+
+All data is stack-resident. `signal[10]` (line 34) holds the fixed input sequence `{100, 110, 105, 120, 115, 130, 125, 140, 135, 150}`, `buffer[5]` (line 35) is the circular window initialised to zero, `sum` (line 36) tracks the running window total, and `moving_average[10]` (line 37) stores the output. No heap allocation occurs.
+
+**Moving-average loop (lines 39–50):** For each of the 10 samples, the loop body performs three operations in sequence:
+
+1. **Evict (line 41):** `sum -= buffer[i % 5]` — subtracts the value that is about to be overwritten, i.e., the sample that fell out of the window.
+2. **Insert (lines 44–45):** `buffer[i % 5] = signal[i]; sum += signal[i]` — writes the new sample into the same slot and adds it to the running total.
+3. **Output (line 49):** `moving_average[i] = sum / BUFFER_SIZE` — integer division by 5. The comment in the source notes that on hardware a power-of-two divisor would permit a right-shift; since 5 is not a power of two, a full integer divide instruction is emitted.
+
+The modulo operation (`i % 5`) in each iteration generates a remainder instruction alongside the integer divide, so the inner loop body produces two division-class instructions per sample despite performing only scalar work. The 10 output values are `{20, 22, 21, 23, 23, 26, 25, 28, 27, 30}`.
+
+**Termination (lines 52–61):** `final_result` is set to `moving_average[DATA_LENGTH - 1]` (`moving_average[9]` = 30, line 56), giving the compiler a visible use for the output array and blocking dead-code elimination of the loop. `tohost = 1` (line 58) signals the simulator, `while(1)` (line 59) provides the hard stop, and `return final_result` (line 61) is unreachable but satisfies the return-type requirement.
+
+The total computational footprint — 10 iterations, each with one subtract, one add, one modulo, and one divide — is the smallest of the three benchmarks, which is why `avg.c` runs roughly 12× faster than `matmul.c` and over 250× faster than `complex.S`. One notable pattern in the results table is that the Superscalar (ON) configurations are measurably *slower* on this benchmark (~29 000 ps vs ~20 500 ps) despite being faster on the heavier workloads. The loop body is too short and sequentially dependent — each iteration writes `sum` and immediately reads it in the next — to expose any instruction-level parallelism, so the dual-issue frontend adds dispatch overhead without being able to retire more than one instruction at a time in the critical path.
+
+### 4.2 Results
+
+The table below reports simulation time in picoseconds for each configuration and benchmark. Because the simulator clock frequency is fixed, picosecond counts map directly to cycle counts; a lower value is strictly better.
+
+| Configuration (Core) | Superscalar | complex.S | matmul.c | avg.c |
+| :--- | :---: | ---: | ---: | ---: |
+| **32-bit** (`cv32a6_imac_sv32`) | OFF | 5,367,146 ps | 243,806 ps | 20,506 ps |
+| **32-bit** (`cv32a6_imac_sv32`) | ON | 4,226,440 ps | 227,494 ps | 29,304 ps |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 5,313,908 ps | 234,488 ps | 20,532 ps |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 4,153,764 ps | 224,972 ps | 29,080 ps |
+
+**Dual-issue on compute-heavy workloads.** For `complex.S` and `matmul.c`, enabling the dual-issue frontend reduces execution time in all four cases. Both benchmarks contain enough independent instructions that the second issue slot is productively used; the effect is most pronounced on `complex.S` (~21 % speedup), which has the highest instruction count and the most opportunity for instruction-level parallelism.
+
+**Dual-issue regression on `avg.c`.** All four configurations show the opposite behaviour on `avg.c`: the dual-issue variant is approximately 40–43 % *slower* than single-issue. Four factors converge to produce this:
+
+1. **Near-zero ILP.** Every iteration updates `sum` with a subtract, then an add, then a divide, each consuming the result of the previous. The loop body is a strict RAW dependency chain, so the second issue slot cannot retire any useful instruction in parallel.
+
+2. **Multi-cycle blocking instructions.** The `% 5` and `/ 5` operations inside the loop emit integer divide and remainder instructions. Neither maps to a single-cycle result; the functional unit stalls the pipeline for multiple cycles on every iteration regardless of issue width.
+
+3. **Dual-issue dispatch overhead under stall.** When the pipeline is stall-dominated, the wider frontend (dependency-check logic, split issue queues, alignment enforcement) consumes extra cycles per stall cycle relative to the simpler single-issue path. With nothing to fill the second slot, this overhead is pure loss.
+
+4. **Short loop amplifies fixed costs.** Only 10 iterations execute. At this scale, startup code, the hand-rolled `memcpy`/`memset` preamble, and the branch-misprediction penalty at loop exit together represent a significant fraction of total execution time. Branch misprediction flushes a deeper speculative window in the dual-issue configuration, making that penalty relatively more expensive.
+
+The `avg.c` result is a textbook case of a workload that is t, sea superscalar frontend: short, serially dependent, and dominated by long-latency operations. `complex.S` is the opposite: long-running, mixed-operation, with many instruction windows that are mutually independent.
+
+**32-bit vs. 64-bit.** At the same issue width the two ISA variants are within ~1 % of each other on every benchmark. The 64-bit configurations hold a small consistent edge on the two heavier workloads, attributable to the wider native registers reducing the number of multi-word operations the compiler emits rather than any fundamental architectural advantage. On `avg.c` the two widths are essentially identical, consistent with the result being driven by structural hazards rather than ISA-level differences.
+
+<div align="center">
+  <img src="cva6_benchmarks_sim_github_dark.png#gh-dark-mode-only" alt="Benchmarks Simulation">
+  <img src="cva6_benchmarks_sim_github_light.png#gh-light-mode-only" alt="Benchmarks Simulation">
+  <p><i>Benchmark execution times across configurations, highlighting superscalar speedup on compute-heavy workloads and its penalty on sequentially dependent tasks.</i></p>
+</div>

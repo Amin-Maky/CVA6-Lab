@@ -1,11 +1,18 @@
 # Case Study: Breaking the FLU Write-back Bottleneck — Motivation
-مقدمه
-(باید یکی به CVA6-sim اشاره کنم و بگم که چی به چی عه و این ریپازیتوری داره چکار میکنه)
->این قسمت رو تا وقتی که دایرکتوری ها به طور کامل کنترل نشدن و مورد تایید قرار تگرفتن، رها میشه
+## Introduction
 
->مقدمه بخش 1، لینک هاش خرابه  
+This document is a case study of a self-inflicted performance problem — and how it was diagnosed and removed.
+
+The work started from a verification exercise, not a design goal. While checking whether CVA6's out-of-order writeback path (managed through the Scoreboard) behaved as intended on a `cv64a6_imafdc_sv39` core, a stall appeared where none should exist: younger single-cycle ALU instructions were held in the Issue Stage behind an older multi-cycle division, despite having no data dependency on it. The cause was structural, not data-related — a **false structural hazard** created by the Functional Unit's shared `flu_ready_o` signal, which let one busy sub-unit (the Divider) block unrelated consumers of the same writeback channel.
+
+What follows is the full path from that observation to a verified fix: root-cause analysis at the signal level, an explicit comparison of the two design-space alternatives (a dedicated Divider channel versus issue decoupling over the existing shared channel), and the selection of the cheaper option with the cost of each documented rather than asserted. The implementation is then presented incrementally, in four phases — prerequisite dependency analysis, issue decoupling, write-back arbitration with a holding buffer, and back-pressure — each phase accompanied by its SystemVerilog changes, a targeted test sequence, and its own failure mode where one exists.
+
+Correctness is treated separately from performance. Section 6 verifies the modified pipeline against deliberately forced hazard scenarios — concurrent ALU work during an active division, control-flow redirection at several distinct points relative to the division's write-back (including coincident redirect), and overlapping multi-cycle instructions — with waveform evidence rather than argument.
+
+The closing section compares the custom core against the unmodified 64-bit baseline and against the Superscalar-ON configuration, on resource utilization, timing (WNS, $F_{max}$, logic depth), and bare-metal benchmark execution time (`complex.S`, `matmul.c`, `complex_avg.c`) measured in Verilator cycles. The result is deliberately modest and deliberately honest: a small reduction in LUTs, a small regression in timing, and up to roughly $3.5\%$ faster execution on division-heavy workloads, with no gain where the workload offers none. The point is that a targeted microarchitectural fix can recover real performance at near-zero hardware cost — without brute-force scaling of a dual-issue pipeline.
 
 ---
+
 ## 1. Root-Cause Analysis
 
 While verifying CVA6's out-of-order writeback capability through the Scoreboard, we encountered an unexpected performance bottleneck: **younger, single-cycle ALU instructions were forced to stall behind an older, multi-cycle division** — not because of a true data dependency, but because both functional units shared the same ready signal back to the Issue Stage.
@@ -227,6 +234,7 @@ When `alu_valid` and `mult_valid` are both high in the same cycle, the ALU wins 
 **Exit criteria:** All tests pass without regression. The IPC (instructions per cycle) for compute-heavy workloads should show measurable improvement compared to the baseline (pre-decoupling) configuration.
 
 ---
+
 ## 2. Prerequisite Analysis (Phase 0)
 
 Before touching any logic, we verified two assumptions that the entire fix depends on.
@@ -257,6 +265,7 @@ We can break this coupling with a minimal change:
 - Use `mult_ready` exclusively to gate (mark busy) the Mult unit.
 
 ---
+
 ## 3. Issue Decoupling (Phase 1)
 
 With Phase 0 confirming that no structural changes are needed inside `serdiv`, the
@@ -450,6 +459,7 @@ This is the defect Phase 2.1 addresses with a holding buffer and explicit
 arbitration.
 
 ---
+
 ## 4. Write-back Collision & the Holding Buffer (Phase 2.1)
 
 Phase 1 decoupled the issue path but left the write-back multiplexer unchanged. That multiplexer uses a fixed `if/else if` priority chain in `ex_stage.sv`:
@@ -600,6 +610,7 @@ At **652 ps**, the Divider's transaction successfully completes its write-back t
 The bug is eliminated. The Divider and ALU can now operate concurrently without losing results, at the cost of a single additional cycle of latency when a collision occurs.
 
 ---
+
 ## 5. Back-Pressure (Phase 2.2)
 
 The holding buffer introduced in Phase 2.1 is exactly **one entry deep**. That depth is sufficient for the collision it was designed to absorb, but it raises an obvious follow-up question: what happens if a *second* Multiplier/Divider result becomes available while the first one is still sitting in the buffer?
@@ -693,37 +704,270 @@ The back-pressure term is a single AND gate on a signal that already exists, so 
 Compared against the stall that Section 1 documented, this is a negligible price. More importantly, the correctness of the design no longer depends on a guard elsewhere in the pipeline that a future refactor might legitimately remove. Phase 2.2 adds no new capability; it converts an accidental invariant into an enforced one.
 
 ---
-## 6.
-مقدمه:
-باید توضیح بدیم که توی این بخش میخوایم صحت سنجی تغییراتی که انجام دادیم رو بررسی کنیم
 
-### 6.1
-معرفی دایرکتوری ها و کار کرد Makefile
-
-### 6.2 
-معرفی انواع تست 
-1. سیمولیشن های .S
-  run_normal: main.S => برای اجرای برنامه دلخواه با شکل موج
-  run_complex: main_Complex.S => اجرای یه برنامه سنگین برای مقایسه سرعت
-  run_bug: Bug_main.S => برای اجرا عمدی یک باگ 
-2. سیمولیشن های .c
-  توی مقدمه این بخش اول توضیح میدیم که چجوری به این بخش رو پیاده کردیم (باید بگیم که اون boot.S برای چی عه و برای اینکه spike نره توی حلقه بینهایت، باید چکار کنیم)
-  run_c_wow: اجرا main.c بدون شکل موج
-  run_c_ww: اجرا main.c با شکل موج
-
-### 6.3 
- صحت سنجی با اجرای باگ های اجباری 
-1. تغییر فلو عمدی در زمان انجام شدن تغسیم 
-2. انجامن جمع در زمان انجام شدن تقسیم 
-3. انداختن تقسیم روی تقسیم 
-
-### 6.4 
-مقایسه اورجینال با تغییر یافته 
-  1. ضرب ماتریس ها 
-  2. Moving Average Filter
-  3. یک برنامه پیچیده رندوم 
+## 6. Functional Verification via Forced Hazard Scenarios
 
 
-### 6.5 
-مقایسه سورس های مصرف شده و مسیر بحرانی در سنتز دو پردازنده اورجینال و تغییریافته 
+### 6.1. Concurrent ALU Operation During an Active Division
 
+U Operation During an Active Division
+
+The first scenario targets the core hazard that motivated this work: a sequence of short-latency ALU operations issued immediately after a long-latency division, where multiple write-back events complete and accumulate in the scoreboard before the divider finishes.
+
+**Test sequence.** The program initializes five registers (`a0`–`a4`) and then issues a `DIV` followed by seven consecutive `ADD` instructions, each reading `a0` and one prior result. Transaction IDs are assigned sequentially and wrap modulo 8 (3-bit field), so the `DIV` carries ID `110` and the `ADD` chain spans IDs `111` through `101`.
+
+```asm
+sub t1, a4, a2   # t1 = 10       (ID 101)
+div t2, a3, t1   # t2 = 409      (ID 110)  ← long-latency
+add t3, a0, a1   # t3 = 12       (ID 111)
+add t4, a0, t3   # t4 = 22       (ID 000)
+add t5, a0, t4   # t5 = 32       (ID 001)
+add t3, a0, t5   # t3 = 42       (ID 010)
+add t4, a0, t3   # t4 = 52       (ID 011)
+add t5, a0, t4   # t5 = 62       (ID 100)
+add t3, a0, t5   # t3 = 72       (ID 101)
+```
+
+Under the modified design, the issue stage is fully decoupled from the divider's ready signal. The `ADD` instructions are free to issue, execute, and write back through Channel 0 while the divider is still running. When the division result is ready and the write-back bus is occupied by an ALU result, the holding buffer latches the result and its transaction ID and waits for the bus to clear.
+
+**Figure 6.1** captures the full lifecycle of this interaction:
+
+![Concurrent ALU Write-backs During an Active Division](Debugging-Waveform-1.png)
+
+**Figure 6.1:** Write-back and commit activity during the concurrent-ALU scenario. Transaction IDs are shown in binary on `issue_pointer_q`, `trans_id_i[0]`, and `commit_pointer_q`. The division result (`wbdata_i[0] = 409`, ID `110`) is visible latched in `mult_buf_result_q` and `mult_buf_trans_id_q` while the bus remains occupied.
+
+Region **A** spans the full observed latency of the `DIV`: from the cycle it is accepted by the issue stage to the cycle its result reaches the write-back bus. During this interval, regions **B** and **C** show the ALU results (`12`, `22`, `32` and `42`, `52`, `62` respectively) arriving on Channel 0 in successive cycles, advancing `trans_id_i[0]` through IDs `111`–`100`, and being registered in the scoreboard — without any stall issued to the upstream pipeline.
+
+At the boundary of region **D**, the divider finishes and its result (`409`, ID `110`) is captured by the holding buffer (`mult_buf_result_q = 409`, `mult_buf_trans_id_q = 110`). The bus is still occupied by the last ALU write-back at the tail of region **C**, so the held result waits exactly one cycle. Region **E** shows the bus clearing: `wt_valid_i[0]` deasserts for one cycle, then the buffer drivy the last ALU write-back at the tail of region **C**, so the held result waits exactly one cycle. Region **E** shows the bus clearing: `wt_valid_i[0]` deasserts for one cycle, then the buffer drives `commit_pointer_q` through ID pairs `(110, 111)`, `(000, 001)`, `(010, 011)`, and `(100, 101)`, with `result[63:0]` sequencing through `409 → 12 → 22 → 32 → 42 → 52 → 62 → 72` — correct values, correct order, no data loss.
+
+### 6.2. Control-Flow Redirection During an Active Division
+
+When a control-flow redirect is signalled while a division is in flight, the pipeline's response depends on how far the result has progressed through the completion path. If the divider has already finished, the result occupies one of two states: it is either driving the write-back bus directly, in which case it has logically retired and the write-back must be allowed to land before the flush takes effect, or it is parked in the holding buffer awaiting bus access, in which case it can be invalidated — provided the flush logic can distinguish it from the concurrent ALU write-backs sharing the same bus and transaction-ID space. A third window exists if the redirect arrives before the ID stage has accepted the division at all; in that case no result is in flight, and the hazard reduces to preventing an architecturally unreachable instruction from ever entering the divider and reserving a scoreboard entry. Sections 6.2.1 through 6.2.3 address each of these cases in turn, distinguishing between redirects caused by unconditional jumps and those caused by mispredicted branches, since the two carry different scoreboard obligations.
+
+#### 6.2.1. Redirect by an Unconditional Jump
+
+The jump (`j branch`, ID `100`) is architecturally certain: it carries no speculative state and requires no pipeline flush. The only concern is temporal — the in-flight division must be allowed to write its result back cleanly even though its completion cycle coincides with the jump's own write-back.
+
+In the test program, `div t2, a3, t1` (ID `110`, computing $4096 \div 10 = 409$) is issued two cycles after the last ALU instruction in the sequence and occupies the multi-cycle divider across all six subsequent `add` instructions before the jump:
+
+```asm
+sub t1, a4, a2    # t1 = 15 - 5 = 10    | ID 101
+div t2, a3, t1    # t2 = 4096/10 = 409  | ID 110  ← enters divider
+add t3, a0, a1    # t3 = 12             | ID 111
+add t4, a0, t3    # t4 = 22             | ID 000
+add t5, a0, t4    # t5 = 32             | ID 001
+add t3, a0, t5    # t3 = 42             | ID 010
+add t4, a0, t3    # t4 = 52             | ID 011
+j   branch                              | ID 100  ← redirect, no flush
+```
+
+The division does not finish until the jump has already reached the write-back stage, producing a one-cycle collision on the write-back bus.
+
+![Waveform: unconditional jump with concurrent division completion](Debugging-Waveform-2.png)
+
+*Figure 6.2.1 — (A) the jump (ID `100`) asserting `wt_valid_i[0]` and driving the write-back bus while the division simultaneously completes its calculation; (B) `mult_buf_result_q=409`, `mult_buf_trans_id_q=110` — the division result latched into the holding buffer in the same cycle the jump occupies the bus; (C) both results committed in strict program order with no gap, no reordering, and `bmiss` deasserted throughout.*
+
+At annotation A, `trans_id_i[0]` carries `100` with `wt_valid_i[0]` asserted: the jump is actively driving the write-back bus. In that same cycle the divider finishes its computation. Because the bus is occupied, the result (`409`, transaction ID `110`) cannot be forwarded immediately; instead it is parked in the holding buffer, as shown at annotation B by `mult_buf_result_q=409` and `mult_buf_trans_id_q=110`. In the following cycle the bus is free and the buffered result forwards onto it normally, with no stall and no data corruption.
+
+Annotation C confirms the outcome: the commit pointers advance monotonically and `result[63:0]` reflects the expected values in program order — `409` followed by the post-redirect `add` results. Neither result is lost, and `bmiss` remains deasserted throughout, confirming the jump never triggers the flush path.
+
+The interaction reduces to two invariants. First, write-back bus arbitration guarantees that a result held in the buffer is forwarded in the cycle immediately after the bus is released, preventing indefinite blocking. Second, the scoreboard retains the division's entry (`110`) until its result has landed in the register file, so the jump's redirection of the fetch pointer does not invalidate a pending but architecturally committed result.
+
+#### 6.2.2. Redirect by a Mispredicted Branch
+
+A mispredicted branch is architecturally more demanding than an unconditional redirect: it carries speculative state, its resolution triggers a full flush of all younger instructions, and the age-ordering logic that decides what survives that flush is exercised under real timing pressure. This combination concentrates error likelihood — an over-eager flush silently discards an older in-flight result; an under-eager one allows a wrong-path instruction to reach the commit queue. Both failure modes are subtle enough to pass unit-level testing while producing observable miscommits only under specific timing conditions, which makes mispredicted branches a natural and high-value correctness-validation surface for the dual-issue write-back mechanism studied here.
+
+Two distinct timing scenarios are examined. Section 6.2.2.1 places the branch redirect entirely within the division's execution window: the flush completes before the divider has produced its result, testing age-selective survival of an older in-flight instruction. Section 6.2.2.2 raises the timing pressure further by making the branch write-back coincide with the division write-back, simultaneously stressing the bus arbitration and scoreboard update paths.
+
+#### 6.2.2.1. Branch Redirect Prior to Division Write-Back
+
+This scenario forces a mispredicted branch to resolve — and redirect the front-end — while an older division is still executing in the divider. Unlike the unconditional jump of [6.2.1](#621-redirect-by-an-unconditional-jump), the branch carries speculative state: its misprediction triggers a full flush of younger instructions. The property under test is that this flush leaves the older, in-flight division untouched, and that commit order is preserved once the division result eventually lands.
+
+**Test sequence.** The register setup is identical to the previous scenarios. The `beq t1, a0, branch` compares `t1 = 10` against `a0 = 10`; the branch is therefore *taken*, but the predictor assumes fall-through, producing a misprediction. Note that the second `beq` (after the first wrong-path `add`) is commented out — only a single branch is active in this variant, placed immediately after the `add` chain and *before* the division has completed:
+
+```asm
+sub t1, a4, a2    # t1 = 15 - 5 = 10    | ID 101
+div t2, a3, t1    # t2 = 4096/10 = 409  | ID 110  ← enters divider
+add t3, a0, a1    # t3 = 12             | ID 111
+add t4, a0, t3    # t4 = 22             | ID 000
+add t5, a0, t4    # t5 = 32             | ID 001
+beq t1, a0, branch #                    | ID 010  ← taken, mispredicted
+add t3, a0, t5    # wrong path, flushed
+# beq t1, a0, branch                    (commented out in this variant)
+add t4, a0, t3    # wrong path, flushed
+add t5, a0, t4    # wrong path, flushed
+add t3, a0, t5    # wrong path, flushed
+branch:
+add t5, a0, t4    # t5 = 62             | ID 011  ← correct path resumes
+add t3, a0, t5    # t3 = 72             | ID 100
+```
+
+The branch reaches the EX stage, resolves, and writes back while the divider — holding the older instruction `110` — is still several cycles away from producing its result. The redirect and flush therefore occur entirely *within* the division's execution window.
+
+![Waveform: mispredicted branch resolving before division write-back](Debugging-Waveform-3.png)
+
+*Figure 6.2.2.1 — (A) as noted previously, the default value driven on the write-back bus is the branch unit's output; it remains on the bus from the moment it is computed until the division result finally claims the bus. (B) the branch (ID `010`) writing back before the division result has been written back — indeed, before it has even been computed. (C) the division result (`409`, ID `110`) writing back. (D) the `bmiss` pulse signalling that the branch was mispredicted, triggering the redirect and flush of the wrong-path instructions. (E) all instructions committing in order and without loss once the division result has written back — commit being, by definition, gated on the write-back of the oldest instruction.*
+
+At annotation B, `trans_id_i[0]` carries `010` with `wt_valid_i[0]` asserted: the branch retires its write-back while the divider is still busy. One cycle later, `bmiss` asserts (annotation D), the front-end is redirected to the `branch:` target, and the four wrong-path `add` instructions are flushed before any of them can claim a scoreboard entry. Crucially, the flush is *age-selective*: the division (ID `110`) is older than the branch, so its scoreboard entry and its occupancy of the divider survive the flush untouched.
+
+Annotation A highlights a subtlety of the bus behaviour: in the absence of an active write-back, the bus idles at the branch unit's output value. This residual value persists across the entire remaining latency of the division and is never sampled — `wt_valid_i[0]` stays deasserted throughout, so the scoreboard registers nothing spurious.
+
+When the divider finishes (annotation C), its result (`409`, ID `110`) writes back through the normal path. Since the flush has long since completed and the bus is idle, no holding-buffer intervention is required. Annotation E then shows the commit pointers advancing through the surviving instructions in strict program order — the division (`409`) followed by the pre-branch `add` results and the correct-path targets (`62`, `72`) — with no gaps and no lost write-backs.
+
+The scenario confirms two guarantees. First, a mispredicted-branch flush discriminates by instruction age: an older multi-cycle instruction in flight is never collateral damage of a younger branch's redirect. Second, the commit stage's in-order requirement naturally absorbs the timing skew — younger `add` results that wrote back before the division simply wait in the scoreboard until the oldest entry (`110`) retires, at which point commit drains them in order.
+
+##### 6.2.2.2. Branch Redirect Coincident with Division Write-Back
+
+This scenario is the timing complement of [6.2.2.1](#6221-branch-redirect-prior-to-division-write-back): rather than the branch resolving while the division is still computing, the two instructions complete in the same cycle. The property under test is that bus arbitration and the age-selective flush operate independently and composably — the flush does not discard a division result that is simultaneously being captured by the holding buffer, and the buffer correctly forwards that result after the branch has released the bus.
+
+**Test sequence.** The setup is identical to [6.2.2.1](#6221-branch-redirect-prior-to-division-write-back) with one structural change: the first `beq` (ID `010`) is commented out and replaced with `add t3, a0, t5` (ID `010`, $t3 = 42$). The branch is pushed one slot later to ID `011`. This single-instruction shift advances the branch's write-back cycle by one, causing it to land in precisely the cycle the divider produces its result:
+
+```asm
+sub t1, a4, a2    # t1 = 15 - 5 = 10    | ID 101
+div t2, a3, t1    # t2 = 4096/10 = 409  | ID 110  ← enters divider
+add t3, a0, a1    # t3 = 12             | ID 111
+add t4, a0, t3    # t4 = 22             | ID 000
+add t5, a0, t4    # t5 = 32             | ID 001
+# beq t1, a0, branch                    | ---     ← commented out
+add t3, a0, t5    # t3 = 42             | ID 010  ← inserted here
+beq t1, a0, branch #                    | ID 011  ← taken, mispredicted
+add t4, a0, t3    # wrong path, flushed
+add t5, a0, t4    # wrong path, flushed
+add t3, a0, t5    # wrong path, flushed
+branch:
+add t5, a0, t4    # t5 = 32             | ID 100
+add t3, a0, t5    # t3 = 42             | ID 101
+```
+
+`beq t1, a0, branch` compares `t1 = 10` against `a0 = 10`; the branch is taken while the predictor assumes fall-through, producing a misprediction.
+
+![Waveform: mispredicted branch coincident with division write-back](Debugging-Waveform-4.png)
+
+*Figure 6.2.2.2 — (A) the branch (ID `011`) claiming the write-back bus in the same cycle the division result becomes ready; bus arbitration assigns priority to the branch. (B) the division result (`409`, ID `110`) captured into `mult_buf_result_q` and `mult_buf_trans_id_q` in that same cycle while the bus is occupied. (C) `bmiss` asserting — also in that same cycle — signalling the branch misprediction and triggering the age-selective flush of wrong-path instructions. (D) commit advancing monotonically through the surviving instructions in strict program order once the division result has forwarded from the buffer.*
+
+At annotation A, `trans_id_i[0]` carries `011` with `wt_valid_i[0]` asserted: the branch is driving the write-back bus. In that same cycle, the divider finishes and its result (`409`, ID `110`) becomes available. Because the bus is occupied, the arbitration logic routes the division result into the holding buffer rather than forwarding it directly; annotation B confirms `mult_buf_result_q = 409` and `mult_buf_trans_id_q = 110` asserting in that same cycle.
+
+Annotation C shows `bmiss` also asserting in that same cycle, redirecting the front-end to the `branch:` target and initiating the flush of the three wrong-path `add` instructions. The flush is age-selective with respect to the branch (ID `011`): only instructions with IDs strictly younger than `011` are invalidated. The division carries ID `110`, which is architecturally *older* — it was issued before the branch — so its scoreboard entry and its holding-buffer slot are invisible to the flush logic and survive intact.
+
+The key architectural property exposed here is causal independence: `bmiss` and the buffer-capture event are concurrent rather than ordered. The buffer latches the division result in response to bus occupancy, with no knowledge of whether a flush is simultaneously in progress. The flush logic invalidates instructions by age, with no knowledge of the buffer's occupancy state. Neither mechanism has a visibility path into the other's internal state, so their simultaneous assertion produces no conflict.
+
+Once the branch releases the bus, the buffer detects the deassert of `wt_valid_i[0]` and drives `409` with ID `110` onto the write-back bus in the immediately following cycle — the same forwarding path described in [6.1](#61-concurrent-alu-operation-during-an-active-division). The wrong-path flush has already completed by this point, so no incorrect instruction can contest the bus or claim a scoreboard entry. Annotation D then shows the commit pointers advancing through all surviving instructions — the division result first, followed by the correct-path `add` results — with no gaps and no reordering.
+
+The scenario validates that the two correction mechanisms are composable under the most adversarial timing alignment: the holding-buffer guarantee and the age-selective flush guarantee are upheld simultaneously, each mechanism operating correctly without requiring coordination with the other.
+
+#### 6.2.3. Redirection Before the Division Is Accepted from the ID Stage
+
+When the control-flow instruction appears *before* the `div` in program order, neither a holding buffer entry nor a scoreboard reservation for the division exists at the point of redirection. The redirect therefore has nothing to undo with respect to the divider. The remaining question is purely structural: can the division, despite being architecturally unreachable, slip past the redirect and enter the divider anyway?
+
+It cannot, and the reason differs slightly between the two redirect types.
+
+**Unconditional jump.** A jump carries no speculative state. By the time it reaches the issue stage and asserts its redirect, all subsequent instructions — including the `div` — are behind it in the pipeline in younger slots. The fetch pointer is redirected immediately and deterministically; the `div` is squashed in decode or issue before it can claim a scoreboard entry or assert a divider request.
+
+**Mispredicted branch.** The branch is resolved in the EX stage. From that point, any instruction younger than the branch — including the `div` — is already somewhere in the ID or issue stages, never in EX. The flush propagates upstream from EX, and the `div` is caught before it can cross into the execution stage and trigger the divider.
+
+The key invariant is that branch resolution time is a fixed, bounded latency. Because the branch and the `div` move through the pipeline in strict issue order, no younger instruction can overtake the branch and reach EX before the misprediction is detected. The `div` arrives at the EX stage gate only after the branch has already resolved there — at which point the flush is already in effect and the `div`'s issue is cancelled.
+
+In both cases the outcome is the same: the divider is never loaded, no scoreboard entry is allocated, and the holding buffer logic is not involved. The hazard is neutralized entirely by the pipeline's existing flush mechanism without any modification to the write-back path.
+
+### 6.3. Overlapping Multi-Cycle Instructions (Division/Multiplication on Division/Multiplication)
+
+The scenarios examined in [6.1](#61-concurrent-alu-operation-during-an-active-division) and [6.2.1](#621-redirect-by-an-unconditional-jump) both reduce to the same core question: what happens when a second result needs the write-back bus while the holding buffer is already occupied by a completed division? The answer established there holds for any second contender — including another long-latency division or multiplication.
+
+The reason this sub-class of overlap cannot produce a hazard, and therefore cannot be isolated as a testable failure mode, is architectural rather than incidental. The CVA6 multi-cycle unit introduces a one-cycle deliberate stall in `wt_valid_i[0]` immediately after each ALU write-back, as observed in waveform region E of Figure 6.1. This deassert is not a side effect of pipeline pressure; it is an intentional decision by the developers to clear the write-back bus for exactly one cycle after every short-latency commit. The effect is a fixed, bounded window during which the bus is guaranteed to be free.
+
+When an older division or multiplication completes and its result is captured in the holding buffer, as described in [6.1](#61-concurrent-alu-operation-during-an-active-division), it waits at most until the next natural clearing of the bus. The deliberate stall ensures that clearing arrives within a constant number of cycles — the buffer does not have to compete indefinitely. The result is forwarded to the register file during that window, deterministically.
+
+A younger division or multiplication instruction, having been issued strictly later due to in-order issue, cannot have arrived at the holding buffer before the older result has already drained. The fixed one-cycle window is consumed by the older result; the younger instruction is still in the divider pipeline when that window opens and closes. There is no race.
+
+It is worth noting that the holding buffer and scoreboard logic described in [5](#5-architectural-modifications) already closes the theoretical residual case: even in an edge configuration where a younger multi-cycle result could attempt to write into the buffer while the older entry has not yet been forwarded, the algorithm prevents the overwrite. The buffer's occupancy flag blocks any new capture until the current entry has committed. This makes the protection unconditional — it does not rely on timing assumptions about when results arrive relative to one another.
+
+The combination of these two properties — the constant-time clearing guaranteed by the deliberate stall, and the overwrite prevention guaranteed by the buffer occupancy check — means that no test program can exercise a failure path in this sub-scenario. Constructing a failure would require simultaneously defeating both mechanisms, which cannot be done through instruction scheduling alone. The hazard is not suppressed under specific conditions; it is structurally absent.
+
+## 7. Comparison
+
+The modifications described in this case study — decoupled ready signalling, bus arbitration, and the holding-buffer back-pressure mechanism — were selected precisely because they promised near-maximum performance gains at minimal hardware cost. Section 7 examines whether that promise holds in practice. The comparison is structured around four axes: resource footprint (LUTs, FFs, and any new logic paths introduced), timing closure and critical-path impact, execution speed as measured by the three benchmark workloads (`complex.S`, `matmul.c`, `avg.c`), and a final trade-off assessment that weighs every cost against the throughput benefit. Together these sections answer the central question of the case study: are the changes justifiable?
+
+### 7.1 Resource Utilization
+
+| Configuration (Core) | Superscalar | LUT | FF | BRAM | DSP | IO |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 54,326 | 23,728 | 36 | 27 | 0 |
+| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | 54,023 | 23,803 | 36 | 27 | 0 |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 63,685 | 25,108 | 36 | 27 | 0 |
+
+
+<div align="center">
+  <img src="custom_cva6_resource_utilization_syn_github_dark.png#gh-dark-mode-only" alt="Comparison Benchmarks Simulation">
+  <img src="custom_cva6_resource_utilization_syn_github_light.png#gh-light-mode-only" alt="Comparison Benchmarks Simulation">
+  <p><i>Figure 7.1: FPGA synthesis resource utilization across configurations. The custom core achieves a slight reduction in LUTs compared to the baseline, avoiding the massive area overhead of the superscalar frontend.</i></p>
+</div>
+
+### 7.2 Timing Analysis & Critical Path
+
+| Configuration (Core) | Superscalar | WNS (ns) | $F_{max}$ (MHz) | Logic Levels | Routing Share |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | −9.118 | 52.31 | 45 | 72.0 % |
+| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | −9.160 | 52.19 | 45 | 71.097 % |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON | −9.968 | 50.08 | 47 | 71.8 % |
+
+
+<div align="center">
+  <img src="custom_cva6_timing_syn_github_dark.png#gh-dark-mode-only" alt="Comparison Benchmarks Simulation">
+  <img src="custom_cva6_timing_syn_github_light.png#gh-light-mode-only" alt="Comparison Benchmarks Simulation">
+  <p><i>Figure 7.2: Timing metrics and critical path comparison. The custom modifications maintain the baseline's logic depth (45 levels) with a negligible impact on maximum frequency (F<sub>max</sub>).</i></p>
+</div>
+
+### 7.3 Performance & Execution Speed (Benchmarks)
+
+
+| Configuration (Core) | Superscalar | complex.S | matmul.c | avg.c |
+| :--- | :---: | ---: | ---: | ---: |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 5,313,908 ps | 234,488 ps | 20,532 ps |
+| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | 5,231,742 ps | 234,488 ps | 20,452 ps |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 4,153,764 ps | 224,972 ps | 29,080 ps |
+
+<div align="center">
+  <img src="custom_cva6_benchmarks_sim_github_dark.png#gh-dark-mode-only" alt="Comparison Benchmarks Simulation">
+  <img src="custom_cva6_benchmarks_sim_github_light.png#gh-light-mode-only" alt="Comparison Benchmarks Simulation">
+  <p><i>Figure 7.3.1: Execution time comparison for standard bare-metal benchmarks. The custom core improves performance in complex.S while avoiding the severe penalties the superscalar core suffers in low-ILP tasks like avg.c.</i></p>
+</div>
+
+#### **Complex Average Program**
+
+**Note:** To run this benchmark, rename `complex_avg.c` to `avg.c` in the `benchmarks/src` folder, then simulate it using:
+
+```
+make ARCH=<64 or 32> run_avg
+```
+
+| Configuration (Core) | Superscalar | complex_avg.c |
+| :--- | :---: | ---: |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 22,471,130 ps |
+| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | 21,669,132 ps |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 19,751,592 ps |
+
+<div align="center">
+  <img src="custom_cva6_benchmarks_sim_avg_github_dark.png#gh-dark-mode-only" alt="Comparison Benchmarks Simulation">
+  <img src="custom_cva6_benchmarks_sim_avg_github_light.png#gh-light-mode-only" alt="Comparison Benchmarks Simulation">
+  <p><i>Figure 7.3.2: Execution time for the demanding complex_avg.c workload, highlighting the ~3.5% performance speedup achieved by the custom core's structural hazard mitigation.</i></p>
+</div>
+
+
+### 7.4 Conclusion
+
+The custom modifications introduced to the 64-bit single-issue CVA6 core—specifically the decoupled ready signalling and the holding-buffer back-pressure mechanism—demonstrate a highly favorable cost-to-benefit ratio. Based on the evaluation across resource utilization, timing closure, and execution speed, we can draw the following conclusions:
+
+**1. Area and Resource Efficiency:** 
+The holding-buffer implementation replaced complex, deeply nested combinational stall logic with a simpler sequential approach. This is clearly reflected in the synthesis results: the custom core actually *reduced* the LUT count by 303 (from 54,326 to 54,023) while adding a negligible 75 Flip-Flops to accommodate the buffer state. Compared to the massive area penalty of enabling the Superscalar frontend (an increase of over 9,000 LUTs), the custom single-issue modification is practically "free" in terms of silicon real estate.
+
+**2. Negligible Timing Impact:** 
+The architectural changes did not meaningfully degrade the critical path. The logic levels remained constant at 45, and the Maximum Frequency ($F_{max}$) experienced a microscopic drop from $52.31 \text{ MHz}$ to $52.19 \text{ MHz}$ (a WNS degradation of just $42 \text{ ps}$). This indicates that the holding buffer resolved the structural hazards in the write-back path without introducing new timing bottlenecks.
+
+**3. Targeted Performance Gains:** 
+Performance improvements were observed exactly where expected: in workloads heavily bottlenecked by structural hazards and multi-cycle operations. 
+*   In `complex.S`, execution time dropped by roughly $1.5\%$ ($\sim 82,000 \text{ ps}$ saved). 
+*   In the longer and more demanding `complex_avg.c` workload, the custom core shaved off over $800,000 \text{ ps}$ ($\sim 3.5\%$ speedup). 
+*   For simpler workloads like `matmul.c` that do not heavily stress the FLU/divider write-back arbitration, performance remained identical, confirming that the changes introduced no baseline dispatch penalties.
+
+**Final Trade-off Assessment:** 
+Are the changes justifiable? Absolutely. The custom 64-bit single-issue core successfully strikes a middle ground. It recovers a meaningful portion of the throughput normally lost to false structural hazards, and it does so while maintaining a smaller combinational footprint and avoiding the severe penalties that the Superscalar frontend suffers on low-ILP tasks (as seen in `avg.c`). It proves that targeted microarchitectural tweaks at the execution-stage boundary can yield noticeable performance dividends without requiring the brute-force hardware scaling of a dual-issue pipeline.
