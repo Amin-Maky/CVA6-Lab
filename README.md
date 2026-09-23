@@ -3,7 +3,20 @@
 
 ## 1. Overview
 
+**CVA6-lab** is an independent, end-to-end educational and developmental framework built around the [CVA6 RISC-V CPU](https://github.com/openhwgroup/cva6). The primary goal of this project was to break away from the "black box" automated scripts provided by the official repository and achieve a deep, hands-on understanding of a production-grade RISC-V core. This repository documents the entire journey: from setting up the complex environment and toolchains, to running custom behavioral simulations from scratch, analyzing the hardware architecture at the signal level, and ultimately modifying the RTL to improve performance.
 
+A significant portion of this project focuses on mastering the hardware design flow. Instead of relying solely on predefined Python wrappers, this project establishes a completely manual, automated-via-Makefile simulation environment using **Verilator** and **Spike** (for co-simulation/verification). Furthermore, it comprehensively details the **Vivado Synthesis** process, exploring how different processor configurations (e.g., 32-bit vs. 64-bit, single-issue vs. dual-issue) impact logic utilization, critical paths, and overall Fmax. 
+
+The capstone of this project is the **Custom 64-bit Architecture Implementation**. By analyzing the pipeline behavior under specific workloads, a structural hazard was identified in the execution stage: multi-cycle operations (like division) were blocking the shared write-back bus, forcing fast, single-cycle ALU instructions to stall. Through targeted RTL modifications—including decoupling ready signals, introducing holding buffers, and implementing back-pressure mechanisms—the write-back contention was resolved. The result is a custom configuration that offers a measurable performance boost (+3.57% in division-heavy benchmarks) with virtually zero hardware overhead compared to the standard single-issue baseline.
+
+### Key Highlights of this Repository:
+*   **Transparent Environment:** Detailed guides on setting up the RISC-V toolchain, Bender, Verilator, and Spike from scratch.
+*   **Custom Simulation Flow:** A self-checking C++ testbench using Verilator, bypassing opaque default scripts.
+*   **In-Depth FPGA Synthesis:** Scripts and analysis for synthesizing standard and superscalar configurations in Vivado.
+*   **Architectural Analysis:** Waveform-level tracing of the issue, execution, and commit stages.
+*   **RTL Modification & Verification:** A step-by-step guide on resolving structural hazards, verified by custom benchmarks and fault-injection scenarios.
+
+---
 
 ## 2. Repository Layout
 
@@ -58,8 +71,8 @@
 ├── constraints/
 │   └── cva6_ooc.xdc
 └── build/                      # (gitignored) All Vivado outputs generated here
-├── vivado_prj_cv32a6/
-└── vivado_prj_cv64a6/
+    ├── vivado_prj_cv32a6/
+    └── vivado_prj_cv64a6/
 ```
 </details>
 
@@ -67,6 +80,7 @@
 <summary><b>scripts/</b> - Helper scripts</summary>
 
 ```text
+├── plotting			        # Generating plots
 └── f-maker                     # CVA6 File Tree Copier & .f File Updater
 ```
 </details>
@@ -77,8 +91,8 @@
 ```text
 ├── Makefile                    # Makefile for Verilator simulation
 └── filelists/                  # Bender output .f files
-├── cv32a6_imac_sv32_verilator.f
-└── cv64a6_imafdc_sv39_verilator.f
+    ├── cv32a6_imac_sv32_verilator.f
+    └── cv64a6_imafdc_sv39_verilator.f
 ```
 </details>
 
@@ -92,7 +106,7 @@
 │   ├── tb_cva6_ww.cpp          # With waveform
 │   └── tb_cva6_wow.cpp         # Without waveform
 └── wrappers/                   # Simulation wrappers
-└── cva6_axi_wrapper.sv
+    └── cva6_axi_wrapper.sv
 ```
 </details>
 
@@ -107,7 +121,57 @@
 ```
 </details>
 
+---
+
 ## 3. Quick Start (`Makefile`)
+
+A single root `Makefile` drives both flows — simulation (delegated to `sim/Makefile`) and FPGA/Vivado. Print the full target list, variables, and options any time:
+
+```bash
+make help
+```
+
+**1. Simple Simulation**
+Runs the default RTL simulation: 64-bit, assembly playground with waveform dump (`CMD=run`).
+```bash
+make sim
+```
+Override the defaults with variables — `ARCH` (default `64`) and `CMD` (default `run`):
+```bash
+make sim ARCH=32 CMD=run_matmul
+```
+Available `CMD` values:
+- `run` (assembly playground, waves ON)
+- `run_c` (C playground, waves ON)
+- `run_complex` (speed benchmark, no waves)
+- `run_bug` (bug hunt, waves ON)
+- `run_matmul` (matrix multiplication program, no waves)
+- `run_avg` (averaging over an array, no waves)
+
+**2. Create Vivado Project**
+Generate the GUI project (files land in `fpga/build/`):
+```bash
+make cva6-64        # 64-bit: cv64a6_imafdc_sv39
+make cva6-32        # 32-bit: cv32a6_imac_sv32
+```
+
+**3. Run Synthesis**
+Full logic synthesis in Vivado batch mode (long run):
+```bash
+make synth-64       # or: make synth-32
+```
+> Long-running. Post-synthesis simulation is also available via `make post-syn-sim-64` / `make post-syn-sim-32`.
+
+**4. Clean Repository**
+Remove simulation artifacts, then delete and recreate `fpga/build/`:
+```bash
+make clean         # sim + fpga
+make clean-sim     # simulation artifacts only
+```
+
+> **Note:** `synth-*` and `cva6-*` require Vivado on `PATH`; `sim` targets require the RISC-V toolchain and Verilator used inside `sim/Makefile`.
+
+---
 
 ## 4. Documentation Index
 
@@ -248,12 +312,55 @@
 
 </details>
 
+---
+
 ## 5. Results at a Glance
 
+### Comparison Synthesis Results
 
+**Timing Performance (WNS & $F_{max}$):**
 
+| Configuration (Core) | Superscalar | WNS (ns) | $F_{max}$ (MHz) | Logic Levels | Routing Share |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | −9.118 | 52.31 | 45 | 72.0 % |
+| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | −9.160 | 52.19 | 45 | 71.097 % |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON | −9.968 | 50.08 | 47 | 71.8 % |
 
+**Logic Utilization (LUT/FF):**
 
+| Configuration (Core) | Superscalar | LUT | FF | BRAM | DSP | IO |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 54,326 | 23,728 | 36 | 27 | 0 |
+| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | 54,023 | 23,803 | 36 | 27 | 0 |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 63,685 | 25,108 | 36 | 27 | 0 |
+
+**Discussion:** Between the two reference configurations, the custom version sits almost exactly on top of the standard non-superscalar build. On timing, the gap is negligible — 52.19 MHz against 52.31 MHz, and a WNS of −9.160 ns against −9.118 ns — while the superscalar build trails well behind at 50.08 MHz. Area tells the same story: 54,023 LUTs and 23,803 FFs, i.e. a few hundred LUTs below and a few dozen FFs above the Superscalar-OFF baseline, both far short of the 63,685 LUTs and 25,108 FFs the Superscalar-ON build requires. In other words, the change to the write-back path costs essentially nothing in frequency or logic, and the custom core behaves as the OFF configuration with a marginal area/timing trade.
+
+<div align="center">
+  <img src="results_syn_github_dark.png#gh-dark-mode-only" alt="Comparison Synthesis Results">
+  <img src="results_syn_github_light.png#gh-light-mode-only" alt="Comparison Synthesis Results">
+  <p><i>Synthesis metrics for the three 64-bit configurations: clock frequency and worst negative slack alongside LUT/FF utilization.</i></p>
+</div>
+
+### Comparison Benchmarks Simulation
+
+| Configuration (Core) | Superscalar | Random Program (Cycles) | Matrix Multiplication (Cycles) | Averaging (Cycles) |
+| :--- | :---: | ---: | ---: | ---: |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 2,656,954 | 117,244 | 11,235,565 |
+| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | 2,615,871 | 117,244 | 10,834,566 |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 2,076,882 | 112,486 | 9,875,796 |
+
+**Discussion:** The custom build consistently beats the standard Superscalar-OFF core — 2,615,871 vs 2,656,954 Cycles on the random program, and 10,834,566 vs 11,235,565 Cycles on averaging — while remaining clearly behind the Superscalar-ON build (2,076,882 and 9,875,796 Cycles). The matrix-multiplication figure is unchanged at 117,244 Cycles, where the workload is dominated by memory traffic rather than issue width. The custom version therefore lands between the two standard configurations, but much closer to the OFF baseline than to the superscalar performance level.
+
+<div align="center">
+  <img src="benchmarks_sim_github_dark.png#gh-dark-mode-only" alt="Comparison Benchmarks Simulation">
+  <img src="benchmarks_sim_github_light.png#gh-light-mode-only" alt="Comparison Benchmarks Simulation">
+  <p><i>Cycle-count comparison across the three benchmarks for each 64-bit configuration.</i></p>
+</div>
+
+**Conclusion:** The custom configuration retains a footprint and timing profile that is essentially on par with the standard non-superscalar core — a negligible ~0.2–0.5% difference in $F_{max}$, WNS, and FF — while delivering a measurable runtime improvement on ILP-sensitive benchmarks: **+1.55%** on the random program and **+3.57%** on the averaging benchmark, with no change on matrix multiplication. This confirms the custom build as a low-cost intermediate tier, gaining real execution-time benefits from the write-back path fix without materially affecting synthesis-side area or timing.
+
+---
 
 ## 6. References and License
 

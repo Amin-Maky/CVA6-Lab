@@ -58,9 +58,7 @@ In the waveform:
 
 5. **Release and recovery:** Only after the Divider completes (~672 ps) does `issue_pointer_q` advance to `110` and `111`, allowing the blocked ALU instructions to finally issue and write back through Channel 0.
 
-The root cause is clear: the **shared `flu_ready_o` signal** creates an artificial dependency. When `serdiv` is busy, `flu_ready_o` remains low, and the Issue Stage interprets this as "the entire FLU is unavailable" — blocking all ALU, Branch, CSR, and Multiplier operations, even though only the Divider sub-unit is actually occupied. The younger ALU instructions are not waiting for the Divider's *result* — they are waiting for the Divider to release a *control signal* that was never exclusive to it in the first place.
-
-The root cause lies in the **shared ready signal topology**. Both the ALU (`alu_wrapper`) and the serial Divider (`serdiv`) drive a single `flu_ready_o` signal back to `issue_read_operands`. When `serdiv` is busy, `flu_ready_o` remains low, and the Issue Stage interprets this as "the entire FLU is unavailable" — blocking all ALU, Branch, CSR, and Multiplier operations, even though only the Divider sub-unit is actually occupied.
+The root cause is a **false structural hazard** stemming from a shared ready-signal topology. Both the ALU (`alu_wrapper`) and the serial Divider (`serdiv`) drive a single `flu_ready_o` signal back to `issue_read_operands`. When `serdiv` is active, `flu_ready_o` drops, which the Issue Stage interprets as the entire Functional Logic Unit (FLU) being unavailable. Consequently, this blocks all ALU, Branch, CSR, and Multiplier operations, even though only the Divider is actually occupied. The younger ALU instructions are not waiting for the Divider's result; they are stalled waiting for a shared control signal. Since these execution units are physically independent, this constitutes an artificial serialization point rather than a true resource conflict.
 
 This is a **false structural hazard**: the hardware resources (ALU, Multiplier, Divider) are physically independent and could operate concurrently, but the single-ready-signal interface creates an artificial serialization point. The younger ALU instructions are not waiting for the Divider's *result* — they are waiting for the Divider to release a *control signal* that was never exclusive to it in the first place.
 
@@ -738,7 +736,7 @@ Under the modified design, the issue stage is fully decoupled from the divider's
 
 Region **A** spans the full observed latency of the `DIV`: from the cycle it is accepted by the issue stage to the cycle its result reaches the write-back bus. During this interval, regions **B** and **C** show the ALU results (`12`, `22`, `32` and `42`, `52`, `62` respectively) arriving on Channel 0 in successive cycles, advancing `trans_id_i[0]` through IDs `111`–`100`, and being registered in the scoreboard — without any stall issued to the upstream pipeline.
 
-At the boundary of region **D**, the divider finishes and its result (`409`, ID `110`) is captured by the holding buffer (`mult_buf_result_q = 409`, `mult_buf_trans_id_q = 110`). The bus is still occupied by the last ALU write-back at the tail of region **C**, so the held result waits exactly one cycle. Region **E** shows the bus clearing: `wt_valid_i[0]` deasserts for one cycle, then the buffer drivy the last ALU write-back at the tail of region **C**, so the held result waits exactly one cycle. Region **E** shows the bus clearing: `wt_valid_i[0]` deasserts for one cycle, then the buffer drives `commit_pointer_q` through ID pairs `(110, 111)`, `(000, 001)`, `(010, 011)`, and `(100, 101)`, with `result[63:0]` sequencing through `409 → 12 → 22 → 32 → 42 → 52 → 62 → 72` — correct values, correct order, no data loss.
+At the boundary of region **D**, the divider finishes and its result (`409`, ID `110`) is captured by the holding buffer (`mult_buf_result_q = 409`, `mult_buf_trans_id_q = 110`). The bus is still occupied by the final ALU write-back at the tail of region **C**, forcing the held result to wait for exactly one cycle. Region **E** demonstrates the bus clearing: `wt_valid_i[0]` deasserts for a single cycle, allowing the buffer to drive `commit_pointer_q` through ID pairs `(110, 111)`, `(000, 001)`, `(010, 011)`, and `(100, 101)`. The `result[63:0]` sequences correctly through `409 → 12 → 22 → 32 → 42 → 52 → 62 → 72`, ensuring no data loss and preserving strict program order.
 
 ### 6.2. Control-Flow Redirection During an Active Division
 
@@ -920,11 +918,11 @@ The modifications described in this case study — decoupled ready signalling, b
 ### 7.3 Performance & Execution Speed (Benchmarks)
 
 
-| Configuration (Core) | Superscalar | complex.S | matmul.c | avg.c |
+| Configuration (Core) | Superscalar | complex.S (Cycles) | matmul.c (Cycles) | avg.c (Cycles) |
 | :--- | :---: | ---: | ---: | ---: |
-| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 5,313,908 ps | 234,488 ps | 20,532 ps |
-| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | 5,231,742 ps | 234,488 ps | 20,452 ps |
-| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 4,153,764 ps | 224,972 ps | 29,080 ps |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 2,656,954 | 117,244 | 10,266 |
+| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | 2,615,871 | 117,244 | 10,226 |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 2,076,882 | 112,486 | 14,540 |
 
 <div align="center">
   <img src="custom_cva6_benchmarks_sim_github_dark.png#gh-dark-mode-only" alt="Comparison Benchmarks Simulation">
@@ -940,11 +938,11 @@ The modifications described in this case study — decoupled ready signalling, b
 make ARCH=<64 or 32> run_avg
 ```
 
-| Configuration (Core) | Superscalar | complex_avg.c |
+| Configuration (Core) | Superscalar | complex_avg.c (Cycles) |
 | :--- | :---: | ---: |
-| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 22,471,130 ps |
-| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | 21,669,132 ps |
-| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 19,751,592 ps |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 11,235,565 |
+| **64-bit-custom** (`cv64a6_imafdc_sv39`) | OFF | 10,834,566 |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 9,875,796 |
 
 <div align="center">
   <img src="custom_cva6_benchmarks_sim_avg_github_dark.png#gh-dark-mode-only" alt="Comparison Benchmarks Simulation">
@@ -953,21 +951,11 @@ make ARCH=<64 or 32> run_avg
 </div>
 
 
-### 7.4 Conclusion
+## 7.4 Conclusion and Final Trade-off Assessment
 
-The custom modifications introduced to the 64-bit single-issue CVA6 core—specifically the decoupled ready signalling and the holding-buffer back-pressure mechanism—demonstrate a highly favorable cost-to-benefit ratio. Based on the evaluation across resource utilization, timing closure, and execution speed, we can draw the following conclusions:
+The custom modifications successfully decoupled the instruction issue mechanism and eliminated the write-back structural hazard with a highly favorable cost-to-benefit ratio:
 
-**1. Area and Resource Efficiency:** 
-The holding-buffer implementation replaced complex, deeply nested combinational stall logic with a simpler sequential approach. This is clearly reflected in the synthesis results: the custom core actually *reduced* the LUT count by 303 (from 54,326 to 54,023) while adding a negligible 75 Flip-Flops to accommodate the buffer state. Compared to the massive area penalty of enabling the Superscalar frontend (an increase of over 9,000 LUTs), the custom single-issue modification is practically "free" in terms of silicon real estate.
-
-**2. Negligible Timing Impact:** 
-The architectural changes did not meaningfully degrade the critical path. The logic levels remained constant at 45, and the Maximum Frequency ($F_{max}$) experienced a microscopic drop from $52.31 \text{ MHz}$ to $52.19 \text{ MHz}$ (a WNS degradation of just $42 \text{ ps}$). This indicates that the holding buffer resolved the structural hazards in the write-back path without introducing new timing bottlenecks.
-
-**3. Targeted Performance Gains:** 
-Performance improvements were observed exactly where expected: in workloads heavily bottlenecked by structural hazards and multi-cycle operations. 
-*   In `complex.S`, execution time dropped by roughly $1.5\%$ ($\sim 82,000 \text{ ps}$ saved). 
-*   In the longer and more demanding `complex_avg.c` workload, the custom core shaved off over $800,000 \text{ ps}$ ($\sim 3.5\%$ speedup). 
-*   For simpler workloads like `matmul.c` that do not heavily stress the FLU/divider write-back arbitration, performance remained identical, confirming that the changes introduced no baseline dispatch penalties.
-
-**Final Trade-off Assessment:** 
-Are the changes justifiable? Absolutely. The custom 64-bit single-issue core successfully strikes a middle ground. It recovers a meaningful portion of the throughput normally lost to false structural hazards, and it does so while maintaining a smaller combinational footprint and avoiding the severe penalties that the Superscalar frontend suffers on low-ILP tasks (as seen in `avg.c`). It proves that targeted microarchitectural tweaks at the execution-stage boundary can yield noticeable performance dividends without requiring the brute-force hardware scaling of a dual-issue pipeline.
+1. **Hardware Cost (Logic/Area):** The inclusion of a holding buffer and multiplexer arbitration marginally increased register usage (+75 FFs) but optimized the overall logic network, resulting in a net reduction of 303 LUTs compared to the baseline single-issue core.
+2. **Timing & Frequency:** The architectural changes introduced a negligible timing regression. The logic depth remained constant at 45 levels, and the Worst Negative Slack (WNS) degraded by just 42 ps, reducing $F_{max}$ slightly from $52.31 \text{ MHz}$ to $52.19 \text{ MHz}$. 
+3. **Throughput Gains:** The resolution of the structural hazard yielded tangible IPC improvements. In division-heavy benchmarks (e.g., `complex_avg.c`), execution time was reduced by roughly 401,000 cycles (a ~3.5% speedup). Control-heavy and data-parallel workloads (`avg.c` and `matmul.c`) maintained baseline performance without any penalty.
+4. **Superscalar Comparison:** While enabling the default dual-issue (superscalar) configuration maximizes Instruction-Level Parallelism (ILP) for highly parallel code, it imposes severe area penalties (~17% LUT increase) and timing degradation (~850 ps WNS drop). Furthermore, it suffers drastically in low-ILP workloads like `avg.c` due to structural saturation. The custom single-issue design strikes an optimal balance, providing targeted hazard mitigation with near-zero hardware overhead.

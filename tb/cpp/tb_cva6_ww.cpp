@@ -240,7 +240,7 @@ int main(int argc, char **argv) {
                         
                         // a) Control-flow check (do the PCs match?)
                         if (pc != expected.pc) {
-                            printf("\n" ANSI_COLOR_RED "[DIVERGENCE ERROR: PC MISMATCH] at time %lu ps\n", main_time);
+                            printf("\n" ANSI_COLOR_RED "[DIVERGENCE ERROR: PC MISMATCH] at cycle %lu\n", main_time / 2);
                             printf("   RTL Executed : PC=0x%016llx\n", (unsigned long long)pc);
                             printf("   Spike Expects: PC=0x%016llx -> %s\n", (unsigned long long)expected.pc, expected.full_line.c_str());
                             sim_failed = true;
@@ -250,7 +250,7 @@ int main(int argc, char **argv) {
                         // b) Datapath check (written register value)
                         if (rd != 0 && expected.has_write) {
                             if (rd != expected.rd) {
-                                printf("\n" ANSI_COLOR_RED "[DIVERGENCE ERROR: DEST REG MISMATCH] at time %lu ps\n", main_time);
+                                printf("\n" ANSI_COLOR_RED "[DIVERGENCE ERROR: DEST REG MISMATCH] at cycle %lu\n", main_time / 2);
                                 printf("   PC=0x%016llx\n", (unsigned long long)pc);
                                 printf("   RTL wrote to   : x%d\n", rd);
                                 printf("   Spike wrote to : x%d\n", expected.rd);
@@ -258,7 +258,7 @@ int main(int argc, char **argv) {
                                 break;
                             }
                             if (wdata != expected.wdata) {
-                                printf("\n" ANSI_COLOR_RED "[DIVERGENCE ERROR: DATA MISMATCH] at time %lu ps\n", main_time);
+                                printf("\n" ANSI_COLOR_RED "[DIVERGENCE ERROR: DATA MISMATCH] at cycle %lu\n", main_time / 2);
                                 printf("   PC=0x%016llx | Register: x%d\n", (unsigned long long)pc, rd);
                                 printf("   RTL Data   : 0x%016llx\n", (unsigned long long)wdata);
                                 printf("   Spike Data : 0x%016llx\n", (unsigned long long)expected.wdata);
@@ -321,7 +321,7 @@ int main(int argc, char **argv) {
             if (!is_synced) {
                 printf("\n" ANSI_COLOR_RED "[STALL ERROR]" ANSI_COLOR_RESET "RTL never started committing instructions! (Initial sync timeout)\n");
             } else {
-                printf("\n" ANSI_COLOR_RED "[STALL ERROR]" ANSI_COLOR_RESET "RTL stopped committing instructions for %llu time units!\n", (unsigned long long)MAX_STALL_TIME);
+                printf("\n" ANSI_COLOR_RED "[STALL ERROR]" ANSI_COLOR_RESET "RTL stopped committing instructions for %llu clock cycles!\n", (unsigned long long)(MAX_STALL_TIME / 2));
                 printf("   The pipeline is likely stalled, trapped, or waiting on memory.\n");
                 if (spike_idx > 0) {
                     printf("   Last successful PC: 0x%016llx\n", (unsigned long long)spike_log[spike_idx-1].pc);
@@ -345,7 +345,7 @@ int main(int argc, char **argv) {
     else {
         std::cout << ANSI_COLOR_GREEN << "          [SUCCESS] SIMULATION COMPLETED." << ANSI_COLOR_RESET << "\n";
         std::cout << "          All " << spike_log.size() << " instructions from Spike log matched perfectly.\n";
-        std::cout << "          Test duration: " << std::dec << main_time << " ps\n";
+        std::cout << "          Test duration: " << std::dec << (main_time / 2) << " clock cycles\n";
     }
     std::cout << "============================================================\n";
 

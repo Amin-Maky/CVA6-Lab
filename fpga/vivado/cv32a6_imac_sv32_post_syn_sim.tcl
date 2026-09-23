@@ -456,7 +456,7 @@ set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} -value {-mode out_of_c
 
 # 4. Launch the synthesis process automatically using multiple CPU threads (jobs)
 # You can change "-jobs 8" based on your CPU cores to make it faster
-launch_runs synth_1 -jobs 15
+launch_runs synth_1 -jobs 8
 
 # 5. Wait for the synthesis run to complete before executing the next commands
 # This is crucial for automation so the script doesn't exit prematurely

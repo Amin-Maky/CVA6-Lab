@@ -37,6 +37,7 @@ CVA6-lab/                       	# Main repository root
   │   │   ├── cv32a6_imac_sv32_verilator.f
   │   │   └── cv64a6_imafdc_sv39_verilator.f
   ├── scripts/                  	# Helper scripts
+  │   ├── plotting			# Generating plots
   │   └── f-maker 			# CVA6 File Tree Copier & .f File Updater
   ├── fpga/
   │   ├── vivado                	# Vivado Tcl scripts

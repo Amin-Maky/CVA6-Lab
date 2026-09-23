@@ -765,8 +765,8 @@ during synthesis.
    integer multiplier. The 64-bit `imafdc` configuration includes a full FPU
    (`fpnew`) and accordingly consumes 27 DSP blocks.
 
-4. **The isolated cost of Superscalar execution.**
-   Because the 64-bit variant synthesized cleanly, we can precisely observe the dual-issue overThis yields a 16 KiB, 4-way set-associative instruction cache with 128-bit cache lines. The instruction cache implementation is not parameterized by a type field analogous to `DCacheType` — a single RTL implementation is used in both builds, and it infers cleanly to BRAM on the Genesys 2 target.
+4.  **The isolated cost of Superscalar execution:**
+   By looking at the 64-bit comparisons, where BRAMs successfully contained the caches, we can precisely observe the dual-issue overhead. Enabling superscalar in the 64-bit core adds **9,359 LUTs (+17.2%)** and **1,380 FFs**. The 32-bit core shows roughly a 5,100 LUT increase (3.7% relative to its inflated base).
 
 ---
 
@@ -781,7 +781,6 @@ The data cache capacity parameters are the same in both packages:
 | `DcacheLineWidth` | 128 bits | `CVA6ConfigDcacheLineWidth` |
 
 A 32 KiB, 8-way set-associative data cache with 128-bit cache lines. Both targets are configured to the same capacity. The geometry alone does not explain any synthesis difference.
-head. Enabling superscalar in the 64-bit core adds **9,359 LUTs (+17.2%)** and **1,380 FFs**. This increase is entirely logical (with 0 extra DSPs or BRAMs) and directly reflects the added hazard detection logic, operand-forwarding pathways, and expanded multiplexers required inside the Scoreboard to issue two instructions simultaneously.
 
 ### 3.2 Timing Analysis & Critical Path Evaluation
 

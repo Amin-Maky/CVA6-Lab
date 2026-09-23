@@ -1,256 +1,229 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import os
+from matplotlib.ticker import FuncFormatter
 
-# ================= Old Data =================
-labels_old = ['32-bit\n(SS OFF)', '32-bit\n(SS ON)', '64-bit\n(SS OFF)', '64-bit\n(SS ON)']
-wns_abs_old = [abs(x) for x in [-3.729, -5.282, -9.118, -9.968]] 
-fmax_old = [72.84, 65.43, 52.31, 50.08]
-lut_old = [135074, 140181, 54326, 63685]
-ff_old = [327292, 328223, 23728, 25108]
-bram_old = [16, 16, 36, 36]
-dsp_old = [4, 4, 27, 27]
-
-complex_s_old = [5367146, 4226440, 5313908, 4153764]
-matmul_c_old = [243806, 227494, 234488, 224972]
-avg_c_old = [20506, 29304, 20532, 29080]
-
-# ================= New Data (Tables 7.1, 7.2, 7.3) =================
-labels_new = ['64-bit\n(SS OFF)', '64-bit-custom\n(SS OFF)', '64-bit\n(SS ON)']
-wns_abs_new = [abs(x) for x in [-9.118, -9.160, -9.968]]
-fmax_new = [52.31, 52.19, 50.08]
-lut_new = [54326, 54023, 63685]
-ff_new = [23728, 23803, 25108]
-bram_new = [36, 36, 36]
-dsp_new = [27, 27, 27]
-
-complex_s_new = [5313908, 5231742, 4153764]
-matmul_c_new = [234488, 234488, 224972]
-avg_c_new = [20532, 20452, 29080]
-
-complex_avg_c_new = [22471130, 21669132, 19751592]
-
-# ================= Themes Configuration =================
-themes = {
-    'transparent': {
-        'bg': 'none', 'text': '#000000', 'grid': '#cccccc', 'spine': '#000000',
-        'wns': '#ff7b72', 'fmax': '#58a6ff', 
-        'lut': '#58a6ff', 'ff': '#d29922', 'bram': '#3fb950', 'dsp': '#f85149',
-        'bench1': '#58a6ff', 'bench2': '#d29922', 'bench3': '#3fb950',
-        'edge': 'none', 'legend_bg': 'none', 'transparent': True, 'name': 'transparent'
-    },
-    'light': {
-        'bg': '#ffffff', 'text': '#24292f', 'grid': '#d0d7de', 'spine': '#d0d7de',
-        'wns': '#cf222e', 'fmax': '#0969da', 
-        'lut': '#0969da', 'ff': '#9a6700', 'bram': '#1a7f37', 'dsp': '#cf222e',
-        'bench1': '#0969da', 'bench2': '#9a6700', 'bench3': '#1a7f37',
-        'edge': 'none', 'legend_bg': '#ffffff', 'transparent': False, 'name': 'light'
-    },
-    'dark': {
-        'bg': '#0d1117', 'text': '#c9d1d9', 'grid': '#30363d', 'spine': '#30363d',
-        'wns': '#ff7b72', 'fmax': '#58a6ff', 
-        'lut': '#58a6ff', 'ff': '#d29922', 'bram': '#3fb950', 'dsp': '#f85149',
-        'bench1': '#58a6ff', 'bench2': '#d29922', 'bench3': '#3fb950',
-        'edge': 'none', 'legend_bg': '#161b22', 'transparent': False, 'name': 'dark'
-    }
+# =====================================================================
+#  Global palette — ONE fixed color per version (GitHub light & dark)
+# =====================================================================
+VERSION_COLORS = {
+    '32-bit (OFF)':        '#9467bd',   # purple
+    '32-bit (ON)':         '#17becf',   # teal
+    '64-bit (OFF)':        '#1f77b4',   # blue
+    '64-bit-custom (OFF)': '#ff7f0e',   # orange
+    '64-bit (ON)':         '#2ca02c',   # green
 }
 
-# ================= Helper Functions =================
-def autolabel(rects, ax, text_color):
-    for rect in rects:
-        height = rect.get_height()
-        ax.annotate(f'{height:,}',
-                    xy=(rect.get_x() + rect.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontsize=8.5,
-                    fontweight='bold', color=text_color)
+LABELS4 = ['32-bit (OFF)', '32-bit (ON)', '64-bit (OFF)', '64-bit (ON)']
+LABELS3 = ['64-bit (OFF)', '64-bit-custom (OFF)', '64-bit (ON)']
 
-def set_background(fig, axes, cfg):
-    if cfg['bg'] != 'none':
-        fig.patch.set_facecolor(cfg['bg'])
-        for ax in axes:
-            ax.set_facecolor(cfg['bg'])
+def colors_for(labels):
+    return [VERSION_COLORS[l] for l in labels]
+
+# =====================================================================
+#  Theme / helpers (same styling as plot.py)
+# =====================================================================
+def set_theme(theme):
+    if theme == 'dark':
+        text_c, axis_c, grid_c, bg_c = '#c9d1d9', '#8b949e', '#30363d', 'none'
     else:
-        fig.patch.set_alpha(0.0)
-        for ax in axes:
-            ax.patch.set_alpha(0.0)
+        text_c, axis_c, grid_c, bg_c = '#24292e', '#24292e', '#e1e4e8', 'white'
+    plt.rcParams.update({
+        'text.color': text_c, 'axes.labelcolor': text_c,
+        'axes.edgecolor': axis_c, 'xtick.color': text_c, 'ytick.color': text_c,
+        'axes.titlecolor': text_c, 'figure.facecolor': bg_c, 'axes.facecolor': bg_c,
+        'savefig.facecolor': bg_c, 'grid.color': grid_c, 'grid.linestyle': '--',
+        'grid.alpha': 0.7, 'font.family': 'sans-serif', 'font.size': 10,
+    })
 
-# ================= Plotting Functions =================
-def plot_timing(cfg, labels, wns_abs, fmax, filename):
-    width = 0.35
-    x = np.arange(len(labels))
-    
-    fig, ax1 = plt.subplots(figsize=(8, 5))
-    set_background(fig, [ax1], cfg)
+def comma_formatter(x, pos):
+    return f'{int(x):,}'
 
-    ax1.set_xlabel('Configurations', color=cfg['text'], fontweight='bold')
-    ax1.set_ylabel('|WNS| (ns)', color=cfg['wns'], fontweight='bold')
-    bars1 = ax1.bar(x - width/2, wns_abs, width, label='|WNS| (ns)', color=cfg['wns'])
-    
-    ax1.tick_params(axis='y', labelcolor=cfg['wns'], colors=cfg['text'])
-    ax1.tick_params(axis='x', colors=cfg['text'])
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(labels)
-    ax1.grid(True, axis='y', color=cfg['grid'], linestyle='--', alpha=0.5)
+def draw_panel(ax, labels, values, title, fmt='{:.2f}', comma_axis=False, rot=12):
+    """One bar panel: unique color per version, bold value label above bars."""
+    bars = ax.bar(labels, values, color=colors_for(labels), width=0.55, zorder=3)
+    ax.set_title(title, fontweight='bold', fontsize=12, pad=12)
+    ax.set_ylim(0, max(values) * 1.18)
+    ax.grid(True, axis='y', zorder=0)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    if comma_axis:
+        ax.yaxis.set_major_formatter(FuncFormatter(comma_formatter))
+    ax.tick_params(axis='x', labelrotation=rot)
+    for b, v in zip(bars, values):
+        ax.annotate(fmt.format(v), (b.get_x() + b.get_width() / 2, b.get_height()),
+                    xytext=(0, 5), textcoords='offset points',
+                    ha='center', va='bottom', fontweight='bold', fontsize=9)
 
-    for spine in ax1.spines.values():
-        spine.set_edgecolor(cfg['spine'])
-
-    ax2 = ax1.twinx()
-    ax2.set_ylabel(r'$F_{max}$ (MHz)', color=cfg['fmax'], fontweight='bold')
-    bars2 = ax2.bar(x + width/2, fmax, width, label=r'$F_{max}$ (MHz)', color=cfg['fmax'])
-    ax2.tick_params(axis='y', labelcolor=cfg['fmax'], colors=cfg['text'])
-
-    for spine in ax2.spines.values():
-        spine.set_edgecolor(cfg['spine'])
-
-    for bar in bars1:
-        yval = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2, yval + (max(wns_abs)*0.02), f'{yval}', ha='center', va='bottom', color=cfg['text'], fontsize=10, fontweight='bold')
-    for bar in bars2:
-        yval = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2, yval + (max(fmax)*0.02), f'{yval}', ha='center', va='bottom', color=cfg['text'], fontsize=10, fontweight='bold')
-
-    plt.title(r'CVA6 Timing Analysis: |WNS| vs $F_{max}$', color=cfg['text'], fontweight='bold', pad=15)
-    fig.legend(loc='upper right', bbox_to_anchor=(0.9, 0.9), facecolor=cfg['legend_bg'], edgecolor=cfg['spine'], labelcolor=cfg['text'])
-
-    ax1.set_ylim(0, max(wns_abs) * 1.25)
-    ax2.set_ylim(0, max(fmax) * 1.25)
-
-    fig.tight_layout()
-    plt.savefig(filename, transparent=cfg['transparent'], dpi=300)
-    plt.close()
-    print(f"Saved: {filename}")
-
-def plot_resources(cfg, labels, lut, ff, bram, dsp, filename):
-    width = 0.35
-    x = np.arange(len(labels))
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    set_background(fig, [ax1, ax2], cfg)
-
-    # Subplot 1: LUT & FF
-    rects1 = ax1.bar(x - width/2, lut, width, label='LUT', color=cfg['lut'], edgecolor=cfg['edge'], linewidth=0.8)
-    rects2 = ax1.bar(x + width/2, ff, width, label='FF', color=cfg['ff'], edgecolor=cfg['edge'], linewidth=0.8)
-
-    ax1.set_ylabel('Resource Count', color=cfg['text'], fontsize=11, fontweight='semibold')
-    ax1.set_title('LUT and FF Utilization', color=cfg['text'], fontsize=13, fontweight='bold', pad=12)
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(labels, color=cfg['text'], fontsize=10)
-    ax1.tick_params(colors=cfg['text'])
-    ax1.grid(axis='y', linestyle='--', alpha=0.5, color=cfg['grid'])
-    
-    leg1 = ax1.legend(facecolor=cfg['legend_bg'], edgecolor=cfg['spine'], labelcolor=cfg['text'])
-    if cfg['transparent']: leg1.get_frame().set_alpha(0.0)
-
-    for spine in ax1.spines.values(): spine.set_color(cfg['spine'])
-    autolabel(rects1, ax1, cfg['text'])
-    autolabel(rects2, ax1, cfg['text'])
-    ax1.set_ylim(0, max(max(lut), max(ff)) * 1.2)
-
-    # Subplot 2: BRAM & DSP
-    rects3 = ax2.bar(x - width/2, bram, width, label='BRAM', color=cfg['bram'], edgecolor=cfg['edge'], linewidth=0.8)
-    rects4 = ax2.bar(x + width/2, dsp, width, label='DSP', color=cfg['dsp'], edgecolor=cfg['edge'], linewidth=0.8)
-
-    ax2.set_ylabel('Resource Count', color=cfg['text'], fontsize=11, fontweight='semibold')
-    ax2.set_title('BRAM and DSP Utilization', color=cfg['text'], fontsize=13, fontweight='bold', pad=12)
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(labels, color=cfg['text'], fontsize=10)
-    ax2.tick_params(colors=cfg['text'])
-    ax2.grid(axis='y', linestyle='--', alpha=0.5, color=cfg['grid'])
-    
-    leg2 = ax2.legend(facecolor=cfg['legend_bg'], edgecolor=cfg['spine'], labelcolor=cfg['text'])
-    if cfg['transparent']: leg2.get_frame().set_alpha(0.0)
-
-    for spine in ax2.spines.values(): spine.set_color(cfg['spine'])
-    autolabel(rects3, ax2, cfg['text'])
-    autolabel(rects4, ax2, cfg['text'])
-    ax2.set_ylim(0, max(max(bram), max(dsp)) * 1.25)
-
-    plt.tight_layout()
-    plt.savefig(filename, dpi=300, bbox_inches='tight', transparent=cfg['transparent'])
+def save(fig, name, theme):
+    fig.savefig(f'{name}_{theme}.png', dpi=300, bbox_inches='tight',
+                transparent=(theme == 'dark'))
     plt.close(fig)
-    print(f"Saved: {filename}")
 
-def plot_benchmarks(cfg, labels, data_comp_s, data_mat_c, data_avg_c, filename):
-    width = 0.5
-    x = np.arange(len(labels))
-    
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
-    set_background(fig, [ax1, ax2, ax3], cfg)
+# =====================================================================
+#  1) Timing & Utilization — 4 configs  ->  cva6_timing_github_*.png
+# =====================================================================
+def plot_timing_4cfg(theme):
+    set_theme(theme)
+    fmax    = [72.84, 65.43, 52.31, 50.08]
+    wns_abs = [3.729, 5.282, 9.118, 9.968]      # |WNS|
+    logic   = [28, 34, 45, 47]
+    routing = [85.1, 77.3, 72.0, 71.8]
+    fig, axs = plt.subplots(2, 2, figsize=(13, 9.5))
+    fig.suptitle('Timing Analysis Comparison', fontsize=16, fontweight='bold')
+    draw_panel(axs[0, 0], LABELS4, fmax,    r'$F_{max}$ (MHz)',      '{:.2f}')
+    draw_panel(axs[0, 1], LABELS4, wns_abs, '|WNS| (ns)',            '{:.3f}')
+    draw_panel(axs[1, 0], LABELS4, logic,   'Logic Levels',          '{:.0f}')
+    draw_panel(axs[1, 1], LABELS4, routing, 'Routing Share (%)',     '{:.1f}')
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    save(fig, 'cva6_timing_github', theme)
 
-    # Subplot 1: complex.S
-    rects1 = ax1.bar(x, data_comp_s, width, color=cfg['bench1'], edgecolor=cfg['edge'], linewidth=0.8)
-    ax1.set_title('complex.S Execution Time', color=cfg['text'], fontsize=12, fontweight='bold')
-    
-    # Subplot 2: matmul.c
-    rects2 = ax2.bar(x, data_mat_c, width, color=cfg['bench2'], edgecolor=cfg['edge'], linewidth=0.8)
-    ax2.set_title('matmul.c Execution Time', color=cfg['text'], fontsize=12, fontweight='bold')
-    
-    # Subplot 3: avg.c
-    rects3 = ax3.bar(x, data_avg_c, width, color=cfg['bench3'], edgecolor=cfg['edge'], linewidth=0.8)
-    ax3.set_title('avg.c Execution Time', color=cfg['text'], fontsize=12, fontweight='bold')
+# =====================================================================
+#  2) Resource Utilization — 4 configs  ->  cva6_resource_github_*.png
+#     LUT/FF on the left column, BRAM/DSP on the right column
+# =====================================================================
+def plot_resource_4cfg(theme):
+    set_theme(theme)
+    lut  = [135074, 140181, 54326, 63685]
+    ff   = [327292, 328223, 23728, 25108]
+    bram = [16, 16, 36, 36]
+    dsp  = [4, 4, 27, 27]
+    fig, axs = plt.subplots(2, 2, figsize=(13, 9.5))
+    fig.suptitle('Resource Utilization Comparison', fontsize=16, fontweight='bold')
+    draw_panel(axs[0, 0], LABELS4, lut,  'LUT Utilization',       '{:,.0f}', comma_axis=True)
+    draw_panel(axs[1, 0], LABELS4, ff,   'Flip-Flop (FF) Utilization', '{:,.0f}', comma_axis=True)
+    draw_panel(axs[0, 1], LABELS4, bram, 'BRAM Utilization',      '{:.0f}')
+    draw_panel(axs[1, 1], LABELS4, dsp,  'DSP Utilization',       '{:.0f}')
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    save(fig, 'cva6_resource_github', theme)
 
-    for ax, rects in zip([ax1, ax2, ax3], [rects1, rects2, rects3]):
-        ax.set_ylabel('Time (ps)', color=cfg['text'], fontsize=10, fontweight='semibold')
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, color=cfg['text'], fontsize=9)
-        ax.tick_params(colors=cfg['text'])
-        ax.grid(axis='y', linestyle='--', alpha=0.5, color=cfg['grid'])
-        for spine in ax.spines.values(): spine.set_color(cfg['spine'])
-        autolabel(rects, ax, cfg['text'])
-        ax.set_ylim(0, max([r.get_height() for r in rects]) * 1.15)
+# =====================================================================
+#  3) Benchmarks (cycles) — 4 configs -> cva6_benchmarks_sim_github_*.png
+# =====================================================================
+def plot_benchmarks_4cfg(theme):
+    set_theme(theme)
+    complex_s = [2683573, 2113220, 2656954, 2076882]
+    matmul_c  = [121903, 113747, 117244, 112486]
+    avg_c     = [10253, 14652, 10266, 14540]
+    fig, axs = plt.subplots(1, 3, figsize=(16, 5.5))
+    fig.suptitle('Benchmark Execution Time (Cycle Count)', fontsize=16, fontweight='bold')
+    draw_panel(axs[0], LABELS4, complex_s, 'complex.S (Cycles)', '{:,.0f}', comma_axis=True, rot=20)
+    draw_panel(axs[1], LABELS4, matmul_c,  'matmul.c (Cycles)',  '{:,.0f}', comma_axis=True, rot=20)
+    draw_panel(axs[2], LABELS4, avg_c,     'avg.c (Cycles)',     '{:,.0f}', comma_axis=True, rot=20)
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    save(fig, 'cva6_benchmarks_sim_github', theme)
 
-    plt.tight_layout()
-    plt.savefig(filename, dpi=300, bbox_inches='tight', transparent=cfg['transparent'])
-    plt.close(fig)
-    print(f"Saved: {filename}")
+# =====================================================================
+#  4) §7.1 Resource — 3 configs
+#     -> custom_cva6_resource_utilization_syn_github_*.png
+# =====================================================================
+def plot_custom_resource(theme):
+    set_theme(theme)
+    lut = [54326, 54023, 63685]
+    ff  = [23728, 23803, 25108]
+    fig, axs = plt.subplots(1, 2, figsize=(13, 5.5))
+    fig.suptitle('Resource Utilization — Custom vs. Baseline', fontsize=16, fontweight='bold')
+    draw_panel(axs[0], LABELS3, lut, 'LUT Utilization',            '{:,.0f}', comma_axis=True)
+    draw_panel(axs[1], LABELS3, ff,  'Flip-Flop (FF) Utilization', '{:,.0f}', comma_axis=True)
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    save(fig, 'custom_cva6_resource_utilization_syn_github', theme)
 
-def plot_single_benchmark(cfg, labels, data, title, filename):
-    width = 0.4
-    x = np.arange(len(labels))
-    
-    fig, ax = plt.subplots(figsize=(8, 5))
-    set_background(fig, [ax], cfg)
+# =====================================================================
+#  5) §7.2 Timing — 3 configs -> custom_cva6_timing_syn_github_*.png
+# =====================================================================
+def plot_custom_timing(theme):
+    set_theme(theme)
+    fmax    = [52.31, 52.19, 50.08]
+    wns_abs = [9.118, 9.160, 9.968]             # |WNS|
+    logic   = [45, 45, 47]
+    routing = [72.0, 71.097, 71.8]
+    fig, axs = plt.subplots(2, 2, figsize=(13, 9.5))
+    fig.suptitle('Timing & Critical Path — Custom vs. Baseline',
+                 fontsize=16, fontweight='bold')
+    draw_panel(axs[0, 0], LABELS3, fmax,    r'$F_{max}$ (MHz)',  '{:.2f}')
+    draw_panel(axs[0, 1], LABELS3, wns_abs, '|WNS| (ns)',        '{:.3f}')
+    draw_panel(axs[1, 0], LABELS3, logic,   'Logic Levels',      '{:.0f}')
+    draw_panel(axs[1, 1], LABELS3, routing, 'Routing Share (%)', '{:.2f}')
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    save(fig, 'custom_cva6_timing_syn_github', theme)
 
-    rects = ax.bar(x, data, width, color=cfg['bench1'], edgecolor=cfg['edge'], linewidth=0.8)
-    
-    ax.set_title(title, color=cfg['text'], fontsize=13, fontweight='bold', pad=15)
-    ax.set_ylabel('Time (ps)', color=cfg['text'], fontsize=11, fontweight='semibold')
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, color=cfg['text'], fontsize=10)
-    ax.tick_params(colors=cfg['text'])
-    ax.grid(axis='y', linestyle='--', alpha=0.5, color=cfg['grid'])
-    
-    for spine in ax.spines.values(): spine.set_color(cfg['spine'])
-    autolabel(rects, ax, cfg['text'])
-    ax.set_ylim(0, max(data) * 1.15)
+# =====================================================================
+#  6) §7.3.1 Benchmarks (cycles) — 3 configs
+#     -> custom_cva6_benchmarks_sim_github_*.png
+# =====================================================================
+def plot_custom_benchmarks(theme):
+    set_theme(theme)
+    complex_s = [2656954, 2615871, 2076882]
+    matmul_c  = [117244, 117244, 112486]
+    avg_c     = [10266, 10226, 14540]
+    fig, axs = plt.subplots(1, 3, figsize=(16, 5.5))
+    fig.suptitle('Benchmark Execution Time — Custom vs. Baseline (Cycle Count)',
+                 fontsize=16, fontweight='bold')
+    draw_panel(axs[0], LABELS3, complex_s, 'complex.S (Cycles)', '{:,.0f}', comma_axis=True, rot=15)
+    draw_panel(axs[1], LABELS3, matmul_c,  'matmul.c (Cycles)',  '{:,.0f}', comma_axis=True, rot=15)
+    draw_panel(axs[2], LABELS3, avg_c,     'avg.c (Cycles)',     '{:,.0f}', comma_axis=True, rot=15)
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    save(fig, 'custom_cva6_benchmarks_sim_github', theme)
 
-    plt.tight_layout()
-    plt.savefig(filename, dpi=300, bbox_inches='tight', transparent=cfg['transparent'])
-    plt.close(fig)
-    print(f"Saved: {filename}")
+# =====================================================================
+#  7) §7.3.2 complex_avg.c — 3 configs
+#     -> custom_cva6_benchmarks_sim_avg_github_*.png
+# =====================================================================
+def plot_custom_complex_avg(theme):
+    set_theme(theme)
+    cycles = [11235565, 10834566, 9875796]
+    fig, ax = plt.subplots(figsize=(8, 6))
+    fig.suptitle('Complex Average Program Execution Time', fontsize=16, fontweight='bold')
+    draw_panel(ax, LABELS3, cycles, 'complex_avg.c (Cycles)', '{:,.0f}', comma_axis=True)
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    save(fig, 'custom_cva6_benchmarks_sim_avg_github', theme)
 
-# ================= Generate All Charts =================
-for name, cfg in themes.items():
-    # 1. Generate OLD Charts
-    plot_timing(cfg, labels_old, wns_abs_old, fmax_old, f"cva6_timing_github_{cfg['name']}.png")
-    plot_resources(cfg, labels_old, lut_old, ff_old, bram_old, dsp_old, f"cva6_resources_github_{cfg['name']}.png")
-    plot_benchmarks(cfg, labels_old, complex_s_old, matmul_c_old, avg_c_old, f"cva6_benchmarks_github_{cfg['name']}.png")
-    
-    # 2. Generate NEW Charts (Timing & Resources)
-    if cfg['name'] != 'transparent':
-        plot_timing(cfg, labels_new, wns_abs_new, fmax_new, f"custom_cva6_timing_syn_github_{cfg['name']}.png")
-        plot_resources(cfg, labels_new, lut_new, ff_new, bram_new, dsp_new, f"custom_cva6_resource_utilization_syn_github_{cfg['name']}.png")
-        
-        # 3. Generate NEW Benchmark Charts
-        plot_benchmarks(cfg, labels_new, complex_s_new, matmul_c_new, avg_c_new, f"custom_cva6_benchmarks_sim_github_{cfg['name']}.png")
-        plot_single_benchmark(cfg, labels_new, complex_avg_c_new, 'complex_avg.c Execution Time', f"custom_cva6_benchmarks_sim_avg_github_{cfg['name']}.png")
-    else:
-        # For transparent theme just in case
-        plot_timing(cfg, labels_new, wns_abs_new, fmax_new, f"custom_cva6_timing_syn_github_{cfg['name']}.png")
-        plot_resources(cfg, labels_new, lut_new, ff_new, bram_new, dsp_new, f"custom_cva6_resource_utilization_syn_github_{cfg['name']}.png")
-        plot_benchmarks(cfg, labels_new, complex_s_new, matmul_c_new, avg_c_new, f"custom_cva6_benchmarks_sim_github_{cfg['name']}.png")
-        plot_single_benchmark(cfg, labels_new, complex_avg_c_new, 'complex_avg.c Execution Time', f"custom_cva6_benchmarks_sim_avg_github_{cfg['name']}.png")
+# =====================================================================
+#  8) Comparison Synthesis Results — 3 configs
+#     -> results_syn_github_*.png   (regenerated with |WNS| + palette)
+# =====================================================================
+def plot_results_syn(theme):
+    set_theme(theme)
+    fmax    = [52.31, 52.19, 50.08]
+    wns_abs = [9.118, 9.160, 9.968]             # |WNS|
+    lut     = [54326, 54023, 63685]
+    ff      = [23728, 23803, 25108]
+    fig, axs = plt.subplots(2, 2, figsize=(13, 9.5))
+    fig.suptitle('Synthesis Results Comparison', fontsize=16, fontweight='bold')
+    draw_panel(axs[0, 0], LABELS3, fmax,    r'$F_{max}$ (MHz)', '{:.2f}')
+    draw_panel(axs[0, 1], LABELS3, wns_abs, '|WNS| (ns)',       '{:.3f}')
+    draw_panel(axs[1, 0], LABELS3, lut,     'LUT Utilization',  '{:,.0f}', comma_axis=True)
+    draw_panel(axs[1, 1], LABELS3, ff,      'Flip-Flop (FF) Utilization', '{:,.0f}', comma_axis=True)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    save(fig, 'results_syn_github', theme)
 
-print("\nAll old and new benchmark charts have been generated successfully!")
+# =====================================================================
+#  9) Comparison Benchmarks Simulation — 3 configs
+#     -> benchmarks_sim_github_*.png
+# =====================================================================
+def plot_benchmarks_sim(theme):
+    set_theme(theme)
+    random_prog = [2656954, 2615871, 2076882]
+    matmul      = [117244, 117244, 112486]
+    averaging   = [11235565, 10834566, 9875796]
+    fig, axs = plt.subplots(1, 3, figsize=(16, 5.5))
+    fig.suptitle('Simulation Benchmarks (Cycle Count)',
+                 fontsize=16, fontweight='bold')
+    draw_panel(axs[0], LABELS3, random_prog, 'Random Program (Cycle Count)',        '{:,.0f}', comma_axis=True, rot=15)
+    draw_panel(axs[1], LABELS3, matmul,      'Matrix Multiplication (Cycle Count)', '{:,.0f}', comma_axis=True, rot=15)
+    draw_panel(axs[2], LABELS3, averaging,   'Averaging (Cycle Count)',             '{:,.0f}', comma_axis=True, rot=15)
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    save(fig, 'benchmarks_sim_github', theme)
+
+# =====================================================================
+if __name__ == '__main__':
+    for t in ['light', 'dark']:
+        plot_timing_4cfg(t)
+        plot_resource_4cfg(t)
+        plot_benchmarks_4cfg(t)
+        plot_custom_resource(t)
+        plot_custom_timing(t)
+        plot_custom_benchmarks(t)
+        plot_custom_complex_avg(t)
+        plot_results_syn(t)
+        plot_benchmarks_sim(t)
+    print('All 18 plots (9 figures x light/dark) generated successfully!')

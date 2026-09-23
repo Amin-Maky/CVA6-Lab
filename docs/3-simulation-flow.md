@@ -1854,7 +1854,7 @@ The project ships two C++ testbench files that share identical simulation logic.
 | Property | `tb_cva6_ww.cpp` | `tb_cva6_wow.cpp` |
 |---|---|---|
 | VCD tracing | Yes (`VerilatedVcdC`) | No |
-| Sim time limit | 5 000 000 ns (5M) | 50 000 000 ns (50M) |
+| Sim time limit | 5 000 000 half-cycles (5M) | 50 000 000 half-cycles (50M) |
 | Makefile targets | `run`, `run_bug`, `run_c` | `run_complex`, `run_matmul`, `run_avg` |
 | Verilator flags | `--trace --trace-structs` | *(none)* |
 
@@ -2119,7 +2119,7 @@ Neither testbench watches for writes to `tohost` or any magic address. The loop 
 1. **Normal completion** — `is_synced` is true, the Spike log is exhausted (`spike_idx >= spike_log.size()`), and at least one instruction was logged. This produces `[SUCCESS]`.
 2. **Co-sim mismatch** — a PC, register, or data mismatch sets `sim_failed = true`. The loop continues until Spike entries run out, then reports `[FAILED]`.
 3. **Stall timeout** — no new commit has been seen for `MAX_STALL_TIME = 100 000` half-cycles. The loop breaks and reports either `[TIMEOUT]` or `[WARNING] SIMULATION INCOMPLETE (Never synced)` depending on whether sync was ever achieved.
-4. **Log not exhausted at hard limit** — `tb_cva6_ww.cpp` caps at 50 M time steps and `tb_cva6_wow.cpp` at 5 M; hitting either limit without sync produces the same never-synced warning.
+4. **Log not exhausted at hard limit** — `tb_cva6_ww.cpp` caps at **5 M** time steps and `tb_cva6_wow.cpp` at **50 M**; hitting either limit without sync produces the same never-synced warning.
 
 The firmware's own `while(1)` after the final `tohost` write (3.4.2) means the processor never traps to an unknown address — it simply keeps executing the spin loop, and the testbench terminates when Spike's log runs dry rather than waiting for a hardware signal.
 
@@ -2312,7 +2312,7 @@ if (main_time - last_commit_time > MAX_STALL_TIME) {
     if (!is_synced) {
         printf("[WARNING] SIMULATION INCOMPLETE (Never synced)\n");
     } else {
-        printf("[STALL ERROR] RTL stopped committing for 100000 time units!\n");
+        printf("[STALL ERROR] RTL stopped committing for 50000 clock cycles!\n");
         printf("  Pipeline is likely stalled, trapped, or waiting on memory\n");
         if (spike_idx > 0)
             printf("  Last successful PC: 0x%016llx\n", spike_log[spike_idx-1].pc);
@@ -2449,6 +2449,12 @@ Two housekeeping targets round out the flow:
 
 > **Note:** Since `_clean` is the first stage of every `_pipeline`, you never *need* to run `make clean` manually before a run — it is there for when you want to leave the directory tidy.
 
+<div align="center">
+  <img src="Makefile_BlockDiagram_dark.png#gh-dark-mode-only" alt="Final block diagram">
+  <img src="Makefile_BlockDiagram_light.png#gh-light-mode-only" alt="Final block diagram">
+  <p><i>The complete automation workflow, implemented via Makefile, is illustrated in the block diagram.</i></p>
+</div>
+
 ---
 
 #### 3.6.5 Post-Synthesis Targets
@@ -2466,16 +2472,9 @@ These compile the dedicated `main-syn.S` firmware, convert it to a Verilog hex i
 
 With this, the loop is closed: everything built up manually across sections 3.1–3.5 is now reproducible with one command, and the co-simulation flow becomes a tool you *use* rather than a procedure you *perform*.
 
-
-<div align="center">
-  <img src="Tb_BlockDiagram_dark.png#gh-dark-mode-only" alt="Final block diagram">
-  <img src="Tb_BlockDiagram_light.png#gh-light-mode-only" alt="Final block diagram">
-  <p><i>The complete automation workflow, implemented via Makefile, is illustrated in the block diagram.</i></p>
-</div>
-
 ## 4. Processor Performance Comparison
 
-Based on the testbench outputs, we compared execution time across four processor configurations using three workloads: a complex random assembly program, a C-based matrix multiplication, and a C-based averaging program.
+Based on the testbench outputs, we compared execution times across four processor configurations using three workloads: a complex random assembly program, a C-based matrix multiplication, and a C-based moving average program.
 
 The four evaluated configurations are:
 *   **32-bit** (Superscalar OFF)
@@ -2483,90 +2482,59 @@ The four evaluated configurations are:
 *   **64-bit** (Superscalar OFF)
 *   **64-bit** (Superscalar ON)
 
-**Interpreting Testbench Output: Cycle Count as the Metric**  
-Simulation time in picoseconds (ps) does not reflect real-world wall-clock time. In Verilator, each clock cycle maps to a fixed ps value (e.g., 2000 ps), so the reported time is directly proportional to the total number of clock cycles. A lower ps value on a Dual-Issue configuration simply means the processor completed the same workload in fewer cycles.
+**Interpreting Testbench Output: Cycle Count as the Metric**
+The testbench reports execution length directly in clock cycles rather than picoseconds (ps) or real-world wall-clock time. A lower total cycle count on a dual-issue configuration indicates that the core executed the same workload in fewer clock cycles compared to the single-issue baseline, reflecting a higher Instructions Per Cycle (IPC) throughput.
 
 ### 4.1 Executed Benchmarks
 
-The three workloads were selected to stress different parts of the pipeline rather than to represent a single application class. One exercises control flow, the ALU, the multiplier, and memory dependency chains almost exclusively in assembly; the other two are C programs whose behaviour is dominated by nested-loop integer arithmetic but whose loop counts differ by orders of magnitude. Together they produce a spread of runtimes — from a few thousand to over five million simulated cycles — which is useful when comparing cycle counts between configurations.
+The three workloads stress different pipeline stages and exhibit varying degrees of Instruction-Level Parallelism (ILP). One heavily exercises control flow, the ALU, multipliers, and memory dependency chains entirely in assembly; the other two are C programs dominated by nested-loop integer arithmetic but with vastly different loop counts. Together, they span execution times from a few thousand to over 2.6 million simulated cycles.
 
-All three are bare-metal RISC-V programs. They contain no standard library: the heap-copy and fill routines that `avg.c` and `matmul.c` need are implemented by hand (`memcpy`/`memset`, `avg.c` lines 1–18, `matmul.c` lines 1–19), and the assembly benchmark has no runtime at all. Each program signals completion by writing `1` to `tohost` and then spinning in an infinite loop, so execution ends at the same deterministic point on every configuration. This matters for the comparison: the reported value depends only on how many cycles the core took to reach the same instruction, not on any OS or I/O behaviour.
+These are bare-metal RISC-V programs lacking standard library support. Heap-copy and memory-fill routines (`memcpy`/`memset`) for `avg.c` and `matmul.c` are implemented manually. Each program signals completion by writing `1` to the `tohost` memory address before entering an infinite spin loop, ensuring execution terminates at a deterministic point across all configurations. Consequently, performance metrics reflect pure architectural execution time, devoid of OS or I/O overhead.
 
-#### 4.1.1 Complex Random Assembly (complex.S)
+#### 4.1.1 Complex Random Assembly (`complex.S`)
+We provide two structurally identical versions (`complex_32.S` and `complex_64.S`), differing only in load/store instructions (`lw`/`sw` vs. `ld`/`sd`) to handle 64-bit runtime constants. The workload operates on a 512-byte scratchpad in `.bss` and executes in three phases:
+1.  **Initialization (`init_loop`):** 64 iterations seeding data-dependent values.
+2.  **Stress Loop:** 32,768 iterations heavily chaining dependent loads, arithmetic operations (`add`, `sub`, shifts), emulated logicals (e.g., XNOR via `xor`+`not`, lacking `Zbb`), all four multiply variants, all four divide/remainder variants (divisors OR-ed with 1 to prevent divide-by-zero), and branching (`beqz`, `bnez`, `bltu`).
+3.  **Reduction (`reduce_loop`):** 64 iterations accumulating sums, XORs, and products, writing final signatures to memory.
 
-Two versions of this benchmark exist — `complex_32.S` for the 32-bit core and `complex_64.S` for the 64-bit core — and they are structurally identical line for line. The only difference is that every `lw`/`sw` in the 32-bit version becomes `ld`/`sd` in the 64-bit version, which is necessary because the constants loaded at runtime (e.g., `0x13579bdf2468ace1`, `0x7fffffffffffffff`) are full 64-bit values that `lw` cannot represent; the rest of the instruction mix — ALU, multiply, divide, branch, and shift — is word-for-word the same.
+Because termination is identically managed, any cycle count discrepancy between the 32-bit and 64-bit configurations stems entirely from microarchitectural behavior.
 
-The program operates on a 512-byte scratchpad buffer (`custom_scratch`) in `.bss` and runs in three phases:
+#### 4.1.2 Matrix Multiplication (`matmul.c`)
+This benchmark performs two independent integer matrix multiplications without standard library support, utilizing hand-implemented `memcpy` and `memset`. Matrices are stack-allocated (5×5 and 10×10).
+*   **Problem 1:** Multiplies a row-major 1–25 matrix by an identity matrix using a classic `i-j-k` loop (125 MAC operations), yielding a trivially verifiable result.
+*   **Problem 2:** Multiplies matrices with irregular, mixed-sign data to prevent compile-time simplification (1,000 MAC operations).
 
-**Phase 1 — Initialisation (`init_loop`, 64 iterations, lines 32–66):** Each iteration computes a value through a chain of `xor`/`add`/`sub`/`and`/`or`/`not` and two multiply variants (`mul`, `mulh`), then stores the result at offset `s0×8` into the scratchpad. This seeds the buffer with data-dependent values that defeat any constant-folding a simulator might attempt.
+To block dead-code elimination, the final result incorporates elements from both output matrices and triggers termination via `tohost`. The total arithmetic work—1,125 integer multiply-accumulates across two loop nests—is modest compared to `complex.S`, which explains why `matmul.c` runs **roughly 22× faster** in the results table.
 
-**Phase 2 — Stress loop (64×512 = 32 768 iterations, lines 70–200):** The outer loop runs 64 times; the inner loop walks all 512 scratchpad slots. Each inner iteration chains two dependent loads, an `add`/`xor`/`sub` sequence, logical shifts (`slli`, `srli`, `srai`), XNOR emulated as `xor` followed by `not` (the Zbb extension is absent from both target ISAs), all four multiply variants (`mul`, `mulh`, `mulhu`, `mulhsu`), all four divide/remainder variants (`div`, `divu`, `rem`, `remu` — each divisor is OR-ed with 1 to prevent divide-by-zero), and several conditional branches (`beqz`, `bnez`, `bltu`). The combination of load-use dependency chains, multiply/divide latency, and dense branching is the reason this benchmark runs roughly 20× longer than `matmul.c`.
-
-**Phase 3 — Reduction (`reduce_loop`, 64 iterations, lines 204–239):** Accumulates a running sum, XOR, and product over the full scratchpad, then performs one final `div`/`rem` on the accumulated state. The two signature values (`s2`, `s3`) are written to the last two 8-byte slots of the scratchpad before termination.
-
-Termination follows the same convention as the other benchmarks: the value `1` is written to `tohost` (`sd t1, 0(t0)` in the 64-bit version, `sw` in the 32-bit version), after which the program enters an infinite spin loop. Because both versions reach this point after the same sequence of instructions and the same number of iterations, the cycle count difference between the 32-bit and 64-bit rows in the results table is attributable entirely to microarchitectural differences between the two cores, not to workload differences.
-
-#### 4.1.2 Matrix Multiplication (matmul.c)
-
-This benchmark contains two independent integer matrix multiplications of different sizes, both compiled without the standard library. The helper routines `memcpy` (lines 1–8) and `memset` (lines 10–16) are hand-implemented as byte-by-byte loops, and `tohost`/`fromhost` are declared `volatile unsigned long` (lines 18–19) to use the HTIF signalling convention shared with the other benchmarks.
-
-All matrices are stack-local `int` arrays inside `main` — no heap allocation, no `malloc`. The 5×5 matrices (`A`, `B`, `C`) occupy 100 bytes each and the 10×10 matrices (`A_10`, `B_10`, `C_10`) occupy 400 bytes each, all sitting in the same stack frame.
-
-**Problem 1 — 5×5 multiplication (lines 21–53):** `A[5][5]` is initialised with the sequential values 1–25 (row-major) and `B[5][5]` is an identity matrix. The result `C[5][5]` is computed by the classic three-level `i-j-k` loop (`C[i][j] += A[i][k] * B[k][j]`, lines 46–53), producing 125 multiply-accumulate operations. Because B is the identity, `C == A` after the loop, which makes correctness trivial to verify.
-
-**Problem 2 — 10×10 multiplication (lines 58–95):** `A_10[10][10]` holds mixed positive, negative, and zero values with no obvious pattern (e.g. row 0 alternates sign, row 4 has a stride-2 repeat of `5, 0`). `B_10[10][10]` has similarly irregular entries with small repeating sub-patterns (rows of all-7s, alternating `2,1`, etc.). The same `i-j-k` structure (lines 88–95) runs to completion, performing 1000 multiply-accumulate operations. The irregular data prevents the compiler from simplifying any iteration away at compile time.
-
-**Termination (lines 97–107):** Before signalling, `final_result` is computed as `C[4][4] + C_10[9][9]` (line 101). Consuming one element from each output matrix gives the compiler a visible use for both computations, preventing dead-code elimination of either loop nest. `tohost = 1` (line 103) then signals the simulator, followed by `while(1)` (line 104) as an unconditional spin. The `return final_result` on line 106 is unreachable but satisfies the compiler's return-type requirement.
-
-The total arithmetic work — 1125 integer multiply-accumulates across two loop nests — is modest compared to `complex.S`, which explains why `matmul.c` runs roughly 10–12× faster in the results table. The benchmark stresses the integer multiplier and the store/load pipeline for stack-resident arrays, with no memory-dependency chains between iterations and no division.
-
-#### 4.1.3 Averaging (avg.c)
-
-This benchmark implements a 5-sample sliding-window moving average over a 10-element integer signal. Like the other two programs, it is compiled bare-metal: `memcpy` (lines 3–10) and `memset` (lines 12–18) are hand-implemented as byte-by-byte loops. Neither is ever called directly inside `main` — they are retained either as compiler-emit targets or for structural consistency with `matmul.c`. The `#include <stdio.h>` at line 1 is a leftover from an earlier draft; `printf` is never referenced and the standard library is not linked. The HTIF interface follows the same convention: `volatile unsigned long tohost` and `fromhost` at lines 21–22.
-
-All data is stack-resident. `signal[10]` (line 34) holds the fixed input sequence `{100, 110, 105, 120, 115, 130, 125, 140, 135, 150}`, `buffer[5]` (line 35) is the circular window initialised to zero, `sum` (line 36) tracks the running window total, and `moving_average[10]` (line 37) stores the output. No heap allocation occurs.
-
-**Moving-average loop (lines 39–50):** For each of the 10 samples, the loop body performs three operations in sequence:
-
-1. **Evict (line 41):** `sum -= buffer[i % 5]` — subtracts the value that is about to be overwritten, i.e., the sample that fell out of the window.
-2. **Insert (lines 44–45):** `buffer[i % 5] = signal[i]; sum += signal[i]` — writes the new sample into the same slot and adds it to the running total.
-3. **Output (line 49):** `moving_average[i] = sum / BUFFER_SIZE` — integer division by 5. The comment in the source notes that on hardware a power-of-two divisor would permit a right-shift; since 5 is not a power of two, a full integer divide instruction is emitted.
-
-The modulo operation (`i % 5`) in each iteration generates a remainder instruction alongside the integer divide, so the inner loop body produces two division-class instructions per sample despite performing only scalar work. The 10 output values are `{20, 22, 21, 23, 23, 26, 25, 28, 27, 30}`.
-
-**Termination (lines 52–61):** `final_result` is set to `moving_average[DATA_LENGTH - 1]` (`moving_average[9]` = 30, line 56), giving the compiler a visible use for the output array and blocking dead-code elimination of the loop. `tohost = 1` (line 58) signals the simulator, `while(1)` (line 59) provides the hard stop, and `return final_result` (line 61) is unreachable but satisfies the return-type requirement.
-
-The total computational footprint — 10 iterations, each with one subtract, one add, one modulo, and one divide — is the smallest of the three benchmarks, which is why `avg.c` runs roughly 12× faster than `matmul.c` and over 250× faster than `complex.S`. One notable pattern in the results table is that the Superscalar (ON) configurations are measurably *slower* on this benchmark (~29 000 ps vs ~20 500 ps) despite being faster on the heavier workloads. The loop body is too short and sequentially dependent — each iteration writes `sum` and immediately reads it in the next — to expose any instruction-level parallelism, so the dual-issue frontend adds dispatch overhead without being able to retire more than one instruction at a time in the critical path.
+#### 4.1.3 Averaging (`avg.c`)
+A 5-sample sliding-window moving average over a 10-element signal. It relies on stack-resident data (a circular buffer, a sum variable, and an output array). The loop body evicts the oldest sample, inserts the new one, and calculates the average using integer division. 
+*Note:* Superscalar configurations are measurably *slower* on this workload (~14,600 vs. ~10,250 cycles). `avg.c` runs roughly 12× faster than `matmul.c` and over 250× faster than `complex.S`. The loop body is extremely short and features a strict read-after-write (RAW) dependency chain—each iteration writes to `sum` and immediately reads it in the next—failing to expose any ILP.
 
 ### 4.2 Results
 
-The table below reports simulation time in picoseconds for each configuration and benchmark. Because the simulator clock frequency is fixed, picosecond counts map directly to cycle counts; a lower value is strictly better.
+The table below reports execution time in **clock cycles** for each configuration and benchmark. Since the simulator clock frequency is fixed, cycle counts serve as an absolute metric for architectural efficiency (a lower value is strictly better).
 
-| Configuration (Core) | Superscalar | complex.S | matmul.c | avg.c |
+| Configuration (Core) | Superscalar | complex.S (Cycles) | matmul.c (Cycles) | avg.c (Cycles) |
 | :--- | :---: | ---: | ---: | ---: |
-| **32-bit** (`cv32a6_imac_sv32`) | OFF | 5,367,146 ps | 243,806 ps | 20,506 ps |
-| **32-bit** (`cv32a6_imac_sv32`) | ON | 4,226,440 ps | 227,494 ps | 29,304 ps |
-| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 5,313,908 ps | 234,488 ps | 20,532 ps |
-| **64-bit** (`cv64a6_imafdc_sv39`) | ON | 4,153,764 ps | 224,972 ps | 29,080 ps |
+| **32-bit** (`cv32a6_imac_sv32`) | OFF | 2,683,573 | 121,903 | 10,253 |
+| **32-bit** (`cv32a6_imac_sv32`) | ON  | 2,113,220 | 113,747 | 14,652 |
+| **64-bit** (`cv64a6_imafdc_sv39`) | OFF | 2,656,954 | 117,244 | 10,266 |
+| **64-bit** (`cv64a6_imafdc_sv39`) | ON  | 2,076,882 | 112,486 | 14,540 |
 
-**Dual-issue on compute-heavy workloads.** For `complex.S` and `matmul.c`, enabling the dual-issue frontend reduces execution time in all four cases. Both benchmarks contain enough independent instructions that the second issue slot is productively used; the effect is most pronounced on `complex.S` (~21 % speedup), which has the highest instruction count and the most opportunity for instruction-level parallelism.
+*   **Dual-issue on compute-heavy workloads:** For `complex.S` and `matmul.c`, enabling the dual-issue frontend reduces execution time across the board. The effect is most pronounced on `complex.S` (~21% speedup), which features long dependency chains and diverse instruction mixtures that keep the superscalar issue queues populated.
+*   **Dual-issue regression on `avg.c`:** Conversely, the dual-issue variant is approximately 40–43% *slower* than the single-issue baseline on `avg.c`. Four factors converge to cause this penalty:
+    1.  **Near-zero ILP:** A strict RAW dependency chain blocks concurrent issue.
+    2.  **Multi-cycle blocking instructions:** Integer division bottlenecks the execute stage.
+    3.  **Dual-issue dispatch overhead:** Wasted cycles occur during pipeline stalls.
+    4.  **Short loops amplifying fixed costs:** Branch mispredictions flush a deeper speculative window in the superscalar configuration.
 
-**Dual-issue regression on `avg.c`.** All four configurations show the opposite behaviour on `avg.c`: the dual-issue variant is approximately 40–43 % *slower* than single-issue. Four factors converge to produce this:
+The `avg.c` result is a textbook case of a workload that is **a worst-case scenario for a superscalar frontend**: short, serially dependent, and dominated by long-latency operations. `complex.S` is the opposite: long-running, mixed-operation, with large instruction windows that allow mutually independent execution.
 
-1. **Near-zero ILP.** Every iteration updates `sum` with a subtract, then an add, then a divide, each consuming the result of the previous. The loop body is a strict RAW dependency chain, so the second issue slot cannot retire any useful instruction in parallel.
-
-2. **Multi-cycle blocking instructions.** The `% 5` and `/ 5` operations inside the loop emit integer divide and remainder instructions. Neither maps to a single-cycle result; the functional unit stalls the pipeline for multiple cycles on every iteration regardless of issue width.
-
-3. **Dual-issue dispatch overhead under stall.** When the pipeline is stall-dominated, the wider frontend (dependency-check logic, split issue queues, alignment enforcement) consumes extra cycles per stall cycle relative to the simpler single-issue path. With nothing to fill the second slot, this overhead is pure loss.
-
-4. **Short loop amplifies fixed costs.** Only 10 iterations execute. At this scale, startup code, the hand-rolled `memcpy`/`memset` preamble, and the branch-misprediction penalty at loop exit together represent a significant fraction of total execution time. Branch misprediction flushes a deeper speculative window in the dual-issue configuration, making that penalty relatively more expensive.
-
-The `avg.c` result is a textbook case of a workload that is t, sea superscalar frontend: short, serially dependent, and dominated by long-latency operations. `complex.S` is the opposite: long-running, mixed-operation, with many instruction windows that are mutually independent.
-
-**32-bit vs. 64-bit.** At the same issue width the two ISA variants are within ~1 % of each other on every benchmark. The 64-bit configurations hold a small consistent edge on the two heavier workloads, attributable to the wider native registers reducing the number of multi-word operations the compiler emits rather than any fundamental architectural advantage. On `avg.c` the two widths are essentially identical, consistent with the result being driven by structural hazards rather than ISA-level differences.
+**32-bit vs. 64-bit:** At the same issue width, the two ISA variants perform within ~1% of each other. The 64-bit configurations maintain a slight edge on heavier workloads, largely because wider native registers reduce the number of multi-word operations emitted by the compiler, rather than due to a fundamental microarchitectural advantage. On `avg.c`, the cycle counts are nearly identical, confirming that performance is bottlenecked by structural hazards and data dependencies, not ISA width.
 
 <div align="center">
   <img src="cva6_benchmarks_sim_github_dark.png#gh-dark-mode-only" alt="Benchmarks Simulation">
   <img src="cva6_benchmarks_sim_github_light.png#gh-light-mode-only" alt="Benchmarks Simulation">
   <p><i>Benchmark execution times across configurations, highlighting superscalar speedup on compute-heavy workloads and its penalty on sequentially dependent tasks.</i></p>
 </div>
+

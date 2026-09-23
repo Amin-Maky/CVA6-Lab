@@ -50,8 +50,9 @@ sudo swapon /swapfile
 ```
 
 To make it persist across reboots, add to `/etc/fstab`:
+```bash
 /swapfile none swap sw 0 0
-
+```
 
 Post-synthesis simulation is lighter — it peaked at ~10.8 GB RAM in testing, so 16 GB physical RAM handles it without swap.
 
@@ -411,9 +412,9 @@ Three failure modes cover the vast majority of problems. All are recoverable wit
 ---
 
 **Error 1 — Architecture mismatch: `cannot guess build type`**
-
+```text
 configure: error: cannot guess build type; you must specify one
-
+```
 
 The `config.guess` and `config.sub` scripts inside the GCC/Binutils source tree are older than the host system they're running on — they don't recognize the triplet. This gets more common as distros age forward.
 
@@ -436,9 +437,9 @@ Then rerun the build script. You don't need to clean first — the configure ste
 ---
 
 **Error 2 — CMake too old**
-
+```text
 CMake 3.14 or higher is required. You are running version 3.10.2
-
+```
 
 Ubuntu 20.04's APT-provided CMake is often 3.10.x, which is too old for this build. The PPA method from Section 3.1 is the clean fix:
 
@@ -869,9 +870,9 @@ python3 cva6.py \
 **GCC flag notes:** these flags aren't optional — they're required for the binary to run correctly in the CVA6 simulation environment:
 
 | Flag | Purpose |
-|---|---|
-| `-static` | No dynamic linker in the simulation environment |
-| `-mcmodel=medany` | Position-independent code model for RISC-V |
+| :--- | :--- |
+| `-static` | No dynamic linker available in the bare-metal environment |
+| `-mcmodel=medany` | Medium/Anywhere code model; addresses data within 2 GB range. Highly suitable for bare-metal, distinct from pure PIC |
 | `-fvisibility=hidden` | Prevents symbol visibility issues in bare-metal context |
 | `-nostdlib` | No hosted standard library — bare-metal target |
 | `-N` | Makes text and data segments writable, disables page alignment |
@@ -918,16 +919,19 @@ Work through these in order. Each item links back to the section where the detai
 **System Dependencies ([3](#3-system-dependencies))**
 
 - [ ] APT packages installed (`cmake help2man device-tree-compiler` + GCC prerequisites) ([3.1](#31-apt-packages))
-- [ ] `cmake --version` reports **3.14 or higher** — upgraded via Kitware PPA if needed ([3.1](#31-apt-packages))
-- [ ] `make --version` reports **3.14 or higher** — upgraded via Kitware PPA if needed ([3.1](#31-apt-packages))
-- [ ] Python venv created: `python3 -m venv-risc-v-gcc-toolchain))**
+- [ ] `cmake --version` reports 3.14 or higher — upgraded via Kitware PPA if needed (3.1) ([3.1](#31-apt-packages))
+- [ ] Python venv created successfully: `python3 -m venv venv_cva6`
+
+---
+
+**RISC-V GCC Toolchain ([4](#4-risc-v-gnu-toolchain))**
 
 - [ ] `$RISCV` exported and persisted in `~/.bashrc` ([4.2](#42-setting-the-riscv-environment-variable))
 - [ ] `$RISCV/bin` is on `$PATH` ([4.2](#42-setting-the-riscv-environment-variable))
 - [ ] Toolchain built: `NUM_JOBS=$(nproc) bash util/toolchain-builder/get-toolchain.sh` ([4.3](#43-building-the-toolchain))
-- [ ] `$RISCV/bin/riscv64-unknown-elf-gcc --version` reports **GCC 13.1.0** ([4.6](#46-verifying-the-installation))
+- [ ] `$GAPGPTMASKTOKENgppag4n6tdX1X*GCC 13.1.0** ([4.6](#46-verifying-the-installation))
 - [ ] Minimal test binary compiles without errors ([4.6](#46-verifying-the-installation))
-- [ ] `ls $RISCV/bin/ | grep riscv` shows `gcc`, `as`, `ld`, `objcopy`, `objdump`, and friends ([§4.6](#46-verifying-the-installation))
+- [ ] `ls $RISCV/bin/ | grep riscv` shows `gcc`, `as`, `ld`, `objcopy`, `objdump`, and friends ([4.6](#46-verifying-the-installation))
 
 ---
 
@@ -959,7 +963,7 @@ If something's broken, find the symptom below and jump straight to the fix.
 | Broken symlinks or failed submodule state | [1.1](#11-operating-system--filesystem) — you're likely on NTFS |
 | `xsim` simulation crashes with out-of-memory | [1.2](#12-storage--ram) — add the 16 GB swapfile |
 | `git clone` or `git submodule update` hangs or times out | [1.3](#13-network) — proxy not active |
-| `pip install` hangs silently or fails with connection errors | [1.3](#13-network) and [§3.2](#32-python-virtual-environment) |
+| `pip install` hangs silently or fails with connection errors | [1.3](#13-network) and [3.2](#32-python-virtual-environment) |
 | `git submodule status` shows lines starting with `-` | [2.2](#22-initializing-submodules) — re-run `git submodule update --init --recursive` |
 | Synthesis throws "missing dependencies" or Tcl errors | [2.2](#22-initializing-submodules) — almost always uninitialized submodules |
 | Verilator aborts with an internal error in `lzc.sv` | [2.2](#22-initializing-submodules) and [6.3](#63-building-verilator--spike) — wrong Verilator version |
