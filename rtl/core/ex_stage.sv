@@ -248,7 +248,9 @@ module ex_stage
     // Information dedicated to RVFI - RVFI
     output [CVA6Cfg.PLEN-1:0] rvfi_mem_paddr_o,
     // Original instruction AES bits
-    input logic [5:0] orig_instr_aes_i
+    input logic [5:0] orig_instr_aes_i,
+    // New Port for Devlope
+    output logic mult_ready_o
 );
 
   // -------------------------
@@ -292,6 +294,27 @@ module ex_stage
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] mult_trans_id;
   logic mult_valid;
 
+  // --- MULT Holding Buffer Signals (for Devlope) ---
+  logic                             mult_buf_valid_q, mult_buf_valid_d;
+  logic [CVA6Cfg.XLEN-1:0]          mult_buf_result_q, mult_buf_result_d;
+  logic [CVA6Cfg.TRANS_ID_BITS-1:0] mult_buf_trans_id_q, mult_buf_trans_id_d;
+  
+  // This Block, Designed for Devlope
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      mult_buf_valid_q    <= 1'b0;
+      mult_buf_result_q   <= '0;
+      mult_buf_trans_id_q <= '0;
+    end else if (flush_i) begin
+      mult_buf_valid_q    <= 1'b0;
+      // Result and trans_id don't strictly need clearing on flush, but good practice
+    end else begin
+      mult_buf_valid_q    <= mult_buf_valid_d;
+      mult_buf_result_q   <= mult_buf_result_d;
+      mult_buf_trans_id_q <= mult_buf_trans_id_d;
+    end
+  end
+  
   fu_data_t [CVA6Cfg.NrALUs-1:0] alu_data;
 
   logic [CVA6Cfg.NrIssuePorts-1:0] one_cycle_select;
@@ -384,30 +407,70 @@ module ex_stage
       .csr_addr_o
   );
 
-  assign flu_valid_o = |one_cycle_select | mult_valid;
+  // --- New Block (for Devlope) ---
+  logic flu_bus_busy;
+  assign flu_bus_busy = |one_cycle_select;
 
-  // result MUX
+  // --- Holding Buffer Logic ---
   always_comb begin
-    // Branch result as default case
-    flu_result_o   = {{CVA6Cfg.XLEN - CVA6Cfg.VLEN{1'b0}}, branch_result};
-    flu_trans_id_o = one_cycle_data.trans_id;
-    // ALU result
-    if (|alu_valid_i) begin
-      flu_result_o = alu_result[0];
-      // CSR result
-    end else if (|csr_valid_i) begin
-      flu_result_o = csr_result;
-    end else if (mult_valid) begin
-      flu_result_o   = mult_result;
-      flu_trans_id_o = mult_trans_id;
-    end else if (|aes_valid_i) begin
-      flu_result_o = aes_result;
+    mult_buf_valid_d    = mult_buf_valid_q;
+    mult_buf_result_d   = mult_buf_result_q;
+    mult_buf_trans_id_d = mult_buf_trans_id_q;
+
+    // 1. If multiplier/divider valid but the bus is busy, hold the result in the buffer
+    if (mult_valid && flu_bus_busy) begin
+      mult_buf_valid_d    = 1'b1;
+      mult_buf_result_d   = mult_result;
+      mult_buf_trans_id_d = mult_trans_id;
+    end 
+    // 2. If buffer contains valid data and the bus becomes free, grant the bus and clear the buffer
+    else if (mult_buf_valid_q && !flu_bus_busy) begin
+      mult_buf_valid_d    = 1'b0;
     end
   end
 
+  // --- FLU Valid Signal ---
+  // Valid if a single-cycle operation is active, mult/div completes with a free bus, or buffered data is ready to send
+  assign flu_valid_o = flu_bus_busy | (mult_valid && !flu_bus_busy) | mult_buf_valid_q;
+
+  // --- Result MUX ---
+  always_comb begin
+    // Default: Assign values from single-cycle operation (Branch is selected by default)
+    flu_result_o   = {{CVA6Cfg.XLEN - CVA6Cfg.VLEN{1'b0}}, branch_result};
+    flu_trans_id_o = one_cycle_data.trans_id;
+
+    // Priority is given to single-cycle operations
+    if (|alu_valid_i) begin
+      flu_result_o = alu_result[0];
+    end else if (|csr_valid_i) begin
+      flu_result_o = csr_result;
+    end else if (|aes_valid_i) begin
+      flu_result_o = aes_result;
+    end 
+    // branch_valid_i is a higher priority
+    else if (|branch_valid_i) begin
+    flu_result_o   = {{CVA6Cfg.XLEN - CVA6Cfg.VLEN{1'b0}}, branch_result};
+    flu_trans_id_o = one_cycle_data.trans_id;
+    end
+    
+    // If no single-cycle operation is active and mult/div has data (either direct or buffered)
+    else if (mult_buf_valid_q) begin
+      // Buffered data has higher priority
+      flu_result_o   = mult_buf_result_q;
+      flu_trans_id_o = mult_buf_trans_id_q;
+    end else if (mult_valid) begin
+      // Mult/div valid in the current cycle and the bus is free
+      flu_result_o   = mult_result;
+      flu_trans_id_o = mult_trans_id;
+    end
+  end
+  
+
   // ready flags for FLU
   always_comb begin
-    flu_ready_o = csr_ready & mult_ready;
+    // Decouple multiplier busy signal from other functional unit busy signals
+    flu_ready_o = csr_ready & ~mult_buf_valid_q; // Back-pressure
+    mult_ready_o = mult_ready;
   end
 
   // 4. Multiplication (Sequential)

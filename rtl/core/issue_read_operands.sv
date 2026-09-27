@@ -134,7 +134,9 @@ module issue_read_operands
     // Information dedicated to RVFI - RVFI
     output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.XLEN-1:0] rvfi_rs2_o,
     // Original instruction bits for AES
-    output logic [5:0] orig_instr_aes_bits
+    output logic [5:0] orig_instr_aes_bits,
+    // New Port for Devlope
+    input  logic mult_ready_i
 );
 
   localparam OPERANDS_PER_INSTR = CVA6Cfg.NrRgprPorts / CVA6Cfg.NrIssuePorts;
@@ -332,14 +334,19 @@ module issue_read_operands
     // CVXIF is always ready to try a new transaction on 1st issue port
     // If a transaction is already pending then we stall until the transaction is done.(issue_ack_o[0] = 0)
     // Since we can not have two CVXIF instruction on 1st issue port, CVXIF is always ready for the pending instruction.
+    
+    // Decouple multiplier busy signal from other functional unit busy signals
     if (!flu_ready_i) begin
-      fus_busy[0].alu = 1'b1;
-      fus_busy[0].aes = 1'b1;
-      fus_busy[0].ctrl_flow = 1'b1;
-      fus_busy[0].csr = 1'b1;
-      fus_busy[0].mult = 1'b1;
+        fus_busy[0].alu        = 1'b1;
+        fus_busy[0].aes        = 1'b1;
+        fus_busy[0].ctrl_flow  = 1'b1;
+        fus_busy[0].csr        = 1'b1;
     end
 
+    if (!mult_ready_i) begin
+        fus_busy[0].mult       = 1'b1;
+    end
+    
     // after a multiplication was issued we can only issue another multiplication
     // otherwise we will get contentions on the fixed latency bus
     if (|mult_valid_q) begin

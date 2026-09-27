@@ -954,7 +954,8 @@ module cva6
       .rvfi_commit_pointer_o(rvfi_commit_pointer),
       .rvfi_rs1_o           (rvfi_rs1),
       .rvfi_rs2_o           (rvfi_rs2),
-      .orig_instr_aes_bits  (orig_instr_aes)
+      .orig_instr_aes_bits  (orig_instr_aes),
+      .mult_ready_i         (mult_ready) // New Port for Devlope
   );
 
   // ---------
@@ -1106,7 +1107,8 @@ module cva6
       .pmpaddr_i               (pmpaddr),
       //RVFI
       .rvfi_lsu_ctrl_o         (rvfi_lsu_ctrl),
-      .rvfi_mem_paddr_o        (rvfi_mem_paddr)
+      .rvfi_mem_paddr_o        (rvfi_mem_paddr),
+      .mult_ready_o            (mult_ready)     // New Port for Devlope
   );
 
   // ---------
