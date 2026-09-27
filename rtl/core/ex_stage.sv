@@ -469,7 +469,7 @@ module ex_stage
   // ready flags for FLU
   always_comb begin
     // Decouple multiplier busy signal from other functional unit busy signals
-    flu_ready_o  = csr_ready;
+    flu_ready_o = csr_ready & ~mult_buf_valid_q; // Back-pressure
     mult_ready_o = mult_ready;
   end
 
