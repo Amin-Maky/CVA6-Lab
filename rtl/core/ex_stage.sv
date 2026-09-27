@@ -407,6 +407,7 @@ module ex_stage
       .csr_addr_o
   );
 
+  // --- New Block (for Devlope) ---
   logic flu_bus_busy;
   assign flu_bus_busy = |one_cycle_select;
 
@@ -416,52 +417,54 @@ module ex_stage
     mult_buf_result_d   = mult_buf_result_q;
     mult_buf_trans_id_d = mult_buf_trans_id_q;
 
-    // 1. If the divider produces a result while the bus is busy, store it in the buffer.
+    // 1. If multiplier/divider valid but the bus is busy, hold the result in the buffer
     if (mult_valid && flu_bus_busy) begin
       mult_buf_valid_d    = 1'b1;
       mult_buf_result_d   = mult_result;
       mult_buf_trans_id_d = mult_trans_id;
-    end
-    // 2. If the buffer is full and the bus becomes free, send the buffered result
-    //    to the bus and clear the buffer.
+    end 
+    // 2. If buffer contains valid data and the bus becomes free, grant the bus and clear the buffer
     else if (mult_buf_valid_q && !flu_bus_busy) begin
-      mult_buf_valid_d = 1'b0;
+      mult_buf_valid_d    = 1'b0;
     end
   end
 
   // --- FLU Valid Signal ---
-  // The bus is valid if a single-cycle operation is active, the divider produces
-  // a result while the bus is free, or buffered data is ready to be sent.
+  // Valid if a single-cycle operation is active, mult/div completes with a free bus, or buffered data is ready to send
   assign flu_valid_o = flu_bus_busy | (mult_valid && !flu_bus_busy) | mult_buf_valid_q;
-  
+
   // --- Result MUX ---
   always_comb begin
-    // Default: Select the result from a single-cycle operation
-    // (the branch result is used as the default).
+    // Default: Assign values from single-cycle operation (Branch is selected by default)
     flu_result_o   = {{CVA6Cfg.XLEN - CVA6Cfg.VLEN{1'b0}}, branch_result};
     flu_trans_id_o = one_cycle_data.trans_id;
-  
-    // Give priority to single-cycle operations.
+
+    // Priority is given to single-cycle operations
     if (|alu_valid_i) begin
       flu_result_o = alu_result[0];
     end else if (|csr_valid_i) begin
       flu_result_o = csr_result;
     end else if (|aes_valid_i) begin
       flu_result_o = aes_result;
+    end 
+    // branch_valid_i is a higher priority
+    else if (|branch_valid_i) begin
+    flu_result_o   = {{CVA6Cfg.XLEN - CVA6Cfg.VLEN{1'b0}}, branch_result};
+    flu_trans_id_o = one_cycle_data.trans_id;
     end
-
-    // If no single-cycle operation is active and the divider has data
-    // (either directly or from the buffer).
+    
+    // If no single-cycle operation is active and mult/div has data (either direct or buffered)
     else if (mult_buf_valid_q) begin
-      // Buffered data has priority.
+      // Buffered data has higher priority
       flu_result_o   = mult_buf_result_q;
       flu_trans_id_o = mult_buf_trans_id_q;
     end else if (mult_valid) begin
-      // The divider produces a result in this cycle while the bus is free.
+      // Mult/div valid in the current cycle and the bus is free
       flu_result_o   = mult_result;
       flu_trans_id_o = mult_trans_id;
     end
   end
+  
 
   // ready flags for FLU
   always_comb begin
