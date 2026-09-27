@@ -248,7 +248,9 @@ module ex_stage
     // Information dedicated to RVFI - RVFI
     output [CVA6Cfg.PLEN-1:0] rvfi_mem_paddr_o,
     // Original instruction AES bits
-    input logic [5:0] orig_instr_aes_i
+    input logic [5:0] orig_instr_aes_i,
+    // New Port for Devlope
+    output logic mult_ready_o
 );
 
   // -------------------------
@@ -407,7 +409,9 @@ module ex_stage
 
   // ready flags for FLU
   always_comb begin
-    flu_ready_o = csr_ready & mult_ready;
+    // Decouple multiplier busy signal from other functional unit busy signals
+    flu_ready_o  = csr_ready;
+    mult_ready_o = mult_ready;
   end
 
   // 4. Multiplication (Sequential)
