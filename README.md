@@ -1,5 +1,26 @@
+<div align="center">
 
-# CVA6-lab
+# CVA6-Lab: Architectural Analysis, Custom RTL Optimization & Verification Framework
+
+**An End-to-End Hardware Exploration, Co-Simulation, and FPGA Synthesis Environment for the OpenHW Group CVA6 RISC-V Processor**
+
+[![RISC-V](https://img.shields.io/badge/ISA-RISC--V%20(RV32%20%2F%20RV64)-283593?style=for-the-badge&logo=riscv&logoColor=white)](https://riscv.org/)
+[![SystemVerilog](https://img.shields.io/badge/HDL-SystemVerilog-00599C?style=for-the-badge)](https://ieeexplore.ieee.org/document/8299595)
+[![Verilator](https://img.shields.io/badge/Simulation-Verilator%20%2B%20Spike-4CAF50?style=for-the-badge)](https://www.veripool.org/verilator/)
+[![Vivado](https://img.shields.io/badge/Synthesis-Xilinx%20Vivado-E0115F?style=for-the-badge&logo=amd&logoColor=white)](https://www.xilinx.com/)
+[![Bender](https://img.shields.io/badge/IP%20Management-Bender-FF9800?style=for-the-badge)](https://github.com/pulp-platform/bender)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](./LICENSE)
+
+[Overview](#1-overview) •
+[Repository Layout](#2-repository-layout) •
+[Quick Start](#3-quick-start-makefile) •
+[Documentation](#4-documentation-index) •
+[Results at a Glance](#5-results-at-a-glance)
+
+
+</div>
+
+---
 
 ## 1. Overview
 
@@ -9,12 +30,52 @@ A significant portion of this project focuses on mastering the hardware design f
 
 The capstone of this project is the **Custom 64-bit Architecture Implementation**. By analyzing the pipeline behavior under specific workloads, a structural hazard was identified in the execution stage: multi-cycle operations (like division) were blocking the shared write-back bus, forcing fast, single-cycle ALU instructions to stall. Through targeted RTL modifications—including decoupling ready signals, introducing holding buffers, and implementing back-pressure mechanisms—the write-back contention was resolved. The result is a custom configuration that offers a measurable performance boost (+3.57% in division-heavy benchmarks) with virtually zero hardware overhead compared to the standard single-issue baseline.
 
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/Cva6_BlockDiagram_IssueStage_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/Cva6_BlockDiagram_IssueStage_light.png">
+    <img alt="CVA6 Architecture and Issue Stage Microarchitecture" src="docs/Cva6_BlockDiagram_IssueStage_light.png" width="85%">
+  </picture>
+  <p><i>Top-level CVA6 pipeline architecture with a detailed view of the Issue Stage (Scoreboard & Operand Read) and its interface with Execution/Commit stages.</i></p>
+</div>
+
 ### Key Highlights of this Repository:
 *   **Transparent Environment:** Detailed guides on setting up the RISC-V toolchain, Bender, Verilator, and Spike from scratch.
 *   **Custom Simulation Flow:** A self-checking C++ testbench using Verilator, bypassing opaque default scripts.
 *   **In-Depth FPGA Synthesis:** Scripts and analysis for synthesizing standard and superscalar configurations in Vivado.
 *   **Architectural Analysis:** Waveform-level tracing of the issue, execution, and commit stages.
 *   **RTL Modification & Verification:** A step-by-step guide on resolving structural hazards, verified by custom benchmarks and fault-injection scenarios.
+
+#### Cycle-Accurate Waveform Analysis & Debugging Gallery
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="50%">
+        <img src="docs/Wave-3.2.4.png" alt="32-bit Pipeline Tracing" width="100%">
+        <br>
+        <sub><b>Pipeline Stage Tracing:</b> Tracking instruction flow (A–D) across Issue, Execute, and Commit stages.</sub>
+      </td>
+      <td align="center" width="50%">
+        <img src="docs/Bottleneck.png" alt="Write-back Bottleneck" width="100%">
+        <br>
+        <sub><b>The Structural Hazard:</b> Baseline 64-bit core stalling fast ALU ops during a long division.</sub>
+      </td>
+    </tr>
+    <tr>
+      <td align="center" width="50%">
+        <img src="docs/FixedFirstBug.png" alt="Issue Stage Decoupling" width="100%">
+        <br>
+        <sub><b>Issue Decoupling & Bug Fix:</b> Resolving pointer lockups to allow continuous instruction dispatch.</sub>
+      </td>
+      <td align="center" width="50%">
+        <img src="docs/Debugging-Waveform-1.png" alt="Forced Hazard Verification" width="100%">
+        <br>
+        <sub><b>Custom Holding Buffer in Action:</b> Verifying collision-free write-back under forced hazard scenarios (A–F).</sub>
+      </td>
+    </tr>
+  </table>
+  <p><i>Click on any waveform to view full-resolution signal traces. Detailed cycle-by-cycle explanations are available in <a href="docs/4-arch-32b-analysis.md">Doc 4</a> and <a href="docs/5-arch-64b-custom.md">Doc 5</a>.</i></p>
+</div>
 
 ---
 
